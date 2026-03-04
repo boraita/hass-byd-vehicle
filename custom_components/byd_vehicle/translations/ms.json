@@ -5,7 +5,6 @@
         "title": "Sambung ke BYD",
         "description": "Sediakan akaun BYD anda.",
         "data": {
-          "base_url": "Wilayah",
           "username": "Nama pengguna",
           "password": "Kata laluan",
           "control_pin": "Kawalan PIN (pilihan, 6 digit)",
@@ -315,9 +314,6 @@
       },
       "upgrade_status": {
         "name": "Status naik taraf OTA"
-      },
-      "is_charger_connected": {
-        "name": "Charger connected"
       },
       "oil_pressure_system": {
         "name": "Oil pressure system"

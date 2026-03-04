@@ -5,7 +5,6 @@
         "title": "Yhdistä BYD:hen",
         "description": "Määritä BYD-tilisi.",
         "data": {
-          "base_url": "Alue",
           "username": "Käyttäjänimi",
           "password": "Salasana",
           "control_pin": "Ohjaus-PIN (valinnainen, 6-numeroinen)",
@@ -315,9 +314,6 @@
       },
       "upgrade_status": {
         "name": "OTA-päivityksen tila"
-      },
-      "is_charger_connected": {
-        "name": "Charger connected"
       },
       "oil_pressure_system": {
         "name": "Oil pressure system"

@@ -16,7 +16,7 @@ from pybyd.models.vehicle import Vehicle
 
 from .const import DOMAIN
 from .coordinator import BydDataUpdateCoordinator
-from .entity import BydVehicleEntity
+from .entity import BydActionEntity
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -63,6 +63,8 @@ class BydSeatClimateDescription(SelectEntityDescription):
     """``'heat'`` or ``'vent'``."""
     hvac_attr: str
     """Attribute name on HVAC / realtime status for current state."""
+    capability_key: str | None
+    """Normalized pyBYD capability flag name."""
 
 
 SEAT_CLIMATE_DESCRIPTIONS: tuple[BydSeatClimateDescription, ...] = (
@@ -72,6 +74,7 @@ SEAT_CLIMATE_DESCRIPTIONS: tuple[BydSeatClimateDescription, ...] = (
         seat_position=SeatPosition.DRIVER,
         mode="heat",
         hvac_attr="main_seat_heat_state",
+        capability_key="driver_seat_heat",
     ),
     BydSeatClimateDescription(
         key="driver_seat_ventilation",
@@ -79,6 +82,7 @@ SEAT_CLIMATE_DESCRIPTIONS: tuple[BydSeatClimateDescription, ...] = (
         seat_position=SeatPosition.DRIVER,
         mode="vent",
         hvac_attr="main_seat_ventilation_state",
+        capability_key="driver_seat_ventilation",
     ),
     BydSeatClimateDescription(
         key="passenger_seat_heat",
@@ -86,6 +90,7 @@ SEAT_CLIMATE_DESCRIPTIONS: tuple[BydSeatClimateDescription, ...] = (
         seat_position=SeatPosition.COPILOT,
         mode="heat",
         hvac_attr="copilot_seat_heat_state",
+        capability_key="passenger_seat_heat",
     ),
     BydSeatClimateDescription(
         key="passenger_seat_ventilation",
@@ -93,6 +98,7 @@ SEAT_CLIMATE_DESCRIPTIONS: tuple[BydSeatClimateDescription, ...] = (
         seat_position=SeatPosition.COPILOT,
         mode="vent",
         hvac_attr="copilot_seat_ventilation_state",
+        capability_key="passenger_seat_ventilation",
     ),
     BydSeatClimateDescription(
         key="rear_left_seat_heat",
@@ -100,6 +106,7 @@ SEAT_CLIMATE_DESCRIPTIONS: tuple[BydSeatClimateDescription, ...] = (
         seat_position=None,
         mode="heat",
         hvac_attr="lr_seat_heat_state",
+        capability_key=None,
         entity_registry_enabled_default=False,
     ),
     BydSeatClimateDescription(
@@ -108,6 +115,7 @@ SEAT_CLIMATE_DESCRIPTIONS: tuple[BydSeatClimateDescription, ...] = (
         seat_position=None,
         mode="vent",
         hvac_attr="lr_seat_ventilation_state",
+        capability_key=None,
         entity_registry_enabled_default=False,
     ),
     BydSeatClimateDescription(
@@ -116,6 +124,7 @@ SEAT_CLIMATE_DESCRIPTIONS: tuple[BydSeatClimateDescription, ...] = (
         seat_position=None,
         mode="heat",
         hvac_attr="rr_seat_heat_state",
+        capability_key=None,
         entity_registry_enabled_default=False,
     ),
     BydSeatClimateDescription(
@@ -124,6 +133,7 @@ SEAT_CLIMATE_DESCRIPTIONS: tuple[BydSeatClimateDescription, ...] = (
         seat_position=None,
         mode="vent",
         hvac_attr="rr_seat_ventilation_state",
+        capability_key=None,
         entity_registry_enabled_default=False,
     ),
 )
@@ -142,6 +152,11 @@ async def async_setup_entry(
     for vin, coordinator in coordinators.items():
         vehicle = coordinator.vehicle
         for description in SEAT_CLIMATE_DESCRIPTIONS:
+            capability_key = description.capability_key
+            if capability_key is None or not coordinator.capability_available(
+                capability_key
+            ):
+                continue
             entities.append(
                 BydSeatClimateSelect(coordinator, vin, vehicle, description)
             )
@@ -149,7 +164,7 @@ async def async_setup_entry(
     async_add_entities(entities)
 
 
-class BydSeatClimateSelect(BydVehicleEntity, SelectEntity):
+class BydSeatClimateSelect(BydActionEntity, SelectEntity):
     """Select entity for a single seat heating/ventilation level.
 
     For driver and copilot seats, commands are dispatched through
@@ -196,6 +211,7 @@ class BydSeatClimateSelect(BydVehicleEntity, SelectEntity):
 
     async def async_select_option(self, option: str) -> None:
         """Set the seat climate level via pyBYD capability."""
+        self._ensure_action_allowed()
         desc = self.entity_description
 
         # Rear seats not yet supported by pyBYD SeatCapability.

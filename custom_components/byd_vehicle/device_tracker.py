@@ -32,6 +32,8 @@ async def async_setup_entry(
     entities: list[TrackerEntity] = []
     for vin, gps_coordinator in gps_coordinators.items():
         telemetry = coordinators.get(vin)
+        if telemetry is None or not telemetry.capability_available("location"):
+            continue
         vehicle = (
             telemetry.vehicle
             if telemetry is not None

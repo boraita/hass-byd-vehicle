@@ -5,7 +5,6 @@
         "title": "Csatlakozás a BYD-hoz",
         "description": "BYD fiók beállítása.",
         "data": {
-          "base_url": "Régió",
           "username": "Felhasználónév",
           "password": "Jelszó",
           "control_pin": "Vezérlés PIN kódja (nem kötelező, 6 számjegyű)",
@@ -315,9 +314,6 @@
       },
       "upgrade_status": {
         "name": "OTA frissítési állapot"
-      },
-      "is_charger_connected": {
-        "name": "Charger connected"
       },
       "oil_pressure_system": {
         "name": "Oil pressure system"

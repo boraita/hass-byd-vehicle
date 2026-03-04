@@ -5,7 +5,6 @@
         "title": "Verbinding maken met BYD",
         "description": "Stel uw BYD-account in.",
         "data": {
-          "base_url": "Regio",
           "username": "Gebruikersnaam",
           "password": "Wachtwoord",
           "control_pin": "Controle PIN (optioneel, 6 cijfers)",
@@ -315,9 +314,6 @@
       },
       "upgrade_status": {
         "name": "OTA upgradestatus"
-      },
-      "is_charger_connected": {
-        "name": "Charger connected"
       },
       "oil_pressure_system": {
         "name": "Oil pressure system"

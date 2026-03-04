@@ -83,12 +83,16 @@ class BydApi:
             control_pin=entry.data.get(CONF_CONTROL_PIN) or None,
         )
         self._client: BydClient | None = None
+        self._commands_enabled: bool = False
+        self._commands_failed_reason: str | None = None
+        self._verified_vin: str | None = None
         self._debug_dumps_enabled = entry.options.get(
             CONF_DEBUG_DUMPS,
             DEFAULT_DEBUG_DUMPS,
         )
         self._debug_dump_dir = Path(hass.config.path(".storage/byd_vehicle_debug"))
         self._coordinators: dict[str, BydDataUpdateCoordinator] = {}
+        self._gps_coordinators: dict[str, BydGpsUpdateCoordinator] = {}
         _LOGGER.debug(
             "BYD API initialized: entry_id=%s, region=%s, language=%s",
             entry.entry_id,
@@ -181,14 +185,27 @@ class BydApi:
     # ------------------------------------------------------------------
 
     def register_coordinators(
-        self, coordinators: dict[str, BydDataUpdateCoordinator]
+        self,
+        coordinators: dict[str, BydDataUpdateCoordinator],
+        gps_coordinators: dict[str, BydGpsUpdateCoordinator],
     ) -> None:
-        """Register telemetry coordinators (used by on_state_changed)."""
+        """Register coordinators (used by on_state_changed)."""
         self._coordinators = coordinators
+        self._gps_coordinators = gps_coordinators
 
     @property
     def config(self) -> BydConfig:
         return self._config
+
+    @property
+    def commands_enabled(self) -> bool:
+        """Return True when command access has been verified."""
+        return self._commands_enabled
+
+    @property
+    def commands_failed_reason(self) -> str | None:
+        """Return the failure code from the last verify attempt, or None."""
+        return self._commands_failed_reason
 
     @property
     def debug_dumps_enabled(self) -> bool:
@@ -201,6 +218,51 @@ class BydApi:
 
     async def async_shutdown(self) -> None:
         await self._invalidate_client()
+
+    async def async_verify_commands(self, vin: str) -> bool:
+        """Verify the control PIN and enable remote commands.
+
+        Returns ``True`` when verification succeeded, ``False`` otherwise.
+        On failure the error code is stored in :attr:`commands_failed_reason`
+        and a warning is logged.  Does **not** raise.
+        """
+        if not self._config.control_pin:
+            _LOGGER.debug("No control PIN configured — skipping command verification")
+            return False
+
+        client = await self._ensure_client()
+        try:
+            await client.verify_command_access(vin)
+        except BydControlPasswordError as exc:
+            self._commands_enabled = False
+            self._commands_failed_reason = exc.code
+            if exc.code == "5006":
+                _LOGGER.warning(
+                    "BYD cloud control is temporarily locked; "
+                    "command actions disabled (code=%s)",
+                    exc.code,
+                )
+            else:
+                _LOGGER.warning(
+                    "Command PIN is wrong, disabled command actions (code=%s)",
+                    exc.code,
+                )
+            return False
+        except Exception:  # noqa: BLE001
+            _LOGGER.warning(
+                "Command access verification failed unexpectedly; "
+                "command actions disabled",
+                exc_info=True,
+            )
+            self._commands_enabled = False
+            self._commands_failed_reason = "verify_error"
+            return False
+
+        self._commands_enabled = True
+        self._commands_failed_reason = None
+        self._verified_vin = vin
+        _LOGGER.info("Command access verified — remote control actions enabled")
+        return True
 
     async def _ensure_client(self) -> BydClient:
         if self._client is None:
@@ -216,6 +278,10 @@ class BydApi:
                 on_command_lifecycle=self._handle_command_lifecycle,
             )
             await self._client.async_start()
+
+            # Re-verify command access after client recreation.
+            if self._verified_vin is not None and self._config.control_pin:
+                await self.async_verify_commands(self._verified_vin)
         return self._client
 
     async def _invalidate_client(self) -> None:
@@ -229,6 +295,7 @@ class BydApi:
             except Exception:  # noqa: BLE001
                 pass
             self._client = None
+            self._commands_enabled = False
 
     async def async_get_car(self, vin: str, vehicle: Vehicle) -> BydCar:
         """Obtain a ``BydCar`` aggregate for *vin*.
@@ -243,6 +310,9 @@ class BydApi:
             coordinator = self._coordinators.get(changed_vin)
             if coordinator is not None:
                 coordinator._async_handle_state_push(snapshot)
+            gps_coordinator = self._gps_coordinators.get(changed_vin)
+            if gps_coordinator is not None:
+                gps_coordinator._async_handle_state_push(snapshot)
 
         return await client.get_car(
             vin,
@@ -297,6 +367,19 @@ class BydApi:
             except Exception as retry_exc:  # noqa: BLE001
                 raise UpdateFailed(str(retry_exc)) from retry_exc
         except BydControlPasswordError as exc:
+            self._commands_enabled = False
+            self._commands_failed_reason = exc.code
+            if exc.code == "5006":
+                _LOGGER.warning(
+                    "BYD cloud control is temporarily locked; "
+                    "command actions disabled (code=%s)",
+                    exc.code,
+                )
+            else:
+                _LOGGER.warning(
+                    "Command PIN is wrong, disabled command actions (code=%s)",
+                    exc.code,
+                )
             raise UpdateFailed(
                 "Control PIN rejected or cloud control temporarily locked"
             ) from exc
@@ -361,18 +444,24 @@ class BydDataUpdateCoordinator(DataUpdateCoordinator[VehicleSnapshot]):
         self._realtime_endpoint_unsupported: bool = False
 
     # ------------------------------------------------------------------
-    # State-engine push (no timer reset)
+    # State-engine push
     # ------------------------------------------------------------------
 
     @callback
     def _async_handle_state_push(self, snapshot: VehicleSnapshot) -> None:
-        """Update data from a state-engine push without resetting the refresh timer.
+        """Update from a state-engine push and reset next poll from this update."""
+        previous_timestamp = None
+        if self.data is not None and self.data.realtime is not None:
+            previous_timestamp = getattr(self.data.realtime, "timestamp", None)
 
-        Entities re-render immediately, but the next scheduled HTTP poll fires
-        at its originally planned time rather than being pushed out.  This
-        prevents GPS updates, command projections, and frequent MQTT pushes
-        from starving the telemetry polling cycle.
-        """
+        current_timestamp = None
+        if snapshot.realtime is not None:
+            current_timestamp = getattr(snapshot.realtime, "timestamp", None)
+
+        if current_timestamp is not None and current_timestamp != previous_timestamp:
+            self.async_set_updated_data(snapshot)
+            return
+
         self.data = snapshot
         self.last_update_success = True
         self.async_update_listeners()
@@ -385,6 +474,17 @@ class BydDataUpdateCoordinator(DataUpdateCoordinator[VehicleSnapshot]):
     @property
     def vehicle(self) -> Vehicle:
         return self._vehicle
+
+    @property
+    def has_pin_configured(self) -> bool:
+        """Return True when a non-empty control PIN exists in config."""
+        pin = self._api.config.control_pin
+        return isinstance(pin, str) and bool(pin.strip())
+
+    @property
+    def has_operation_pin(self) -> bool:
+        """Return True when a PIN is configured **and** command access verified."""
+        return self.has_pin_configured and self._api.commands_enabled
 
     @property
     def vin(self) -> str:
@@ -401,6 +501,20 @@ class BydDataUpdateCoordinator(DataUpdateCoordinator[VehicleSnapshot]):
     @property
     def is_vehicle_on(self) -> bool:
         return self._is_vehicle_on_from_snapshot(self.data) is True
+
+    def capability_available(self, capability_key: str) -> bool:
+        """Return capability availability from pyBYD.
+
+        Missing capability metadata is treated as unavailable.
+        """
+        car = self._car
+        if car is None:
+            return False
+        capabilities = getattr(car, "capabilities", None)
+        if capabilities is None:
+            return False
+        value = getattr(capabilities, capability_key, None)
+        return bool(value)
 
     def _should_fetch_hvac(
         self,
@@ -504,6 +618,18 @@ class BydDataUpdateCoordinator(DataUpdateCoordinator[VehicleSnapshot]):
     def polling_enabled(self) -> bool:
         return self._polling_enabled
 
+    @property
+    def poll_interval_seconds(self) -> int:
+        """Return the configured telemetry poll interval in seconds."""
+        return int(self._fixed_interval.total_seconds())
+
+    def set_poll_interval(self, seconds: int) -> None:
+        """Set telemetry poll interval in seconds."""
+        self._fixed_interval = timedelta(seconds=seconds)
+        if self._polling_enabled:
+            self.update_interval = self._fixed_interval
+        self.async_update_listeners()
+
     def set_polling_enabled(self, enabled: bool) -> None:
         self._polling_enabled = bool(enabled)
         self.update_interval = self._fixed_interval if self._polling_enabled else None
@@ -606,9 +732,6 @@ class BydGpsUpdateCoordinator(DataUpdateCoordinator[VehicleSnapshot]):
         poll_interval: int,
         *,
         telemetry_coordinator: BydDataUpdateCoordinator | None = None,
-        smart_polling: bool = False,
-        active_interval: int = 30,
-        inactive_interval: int = 600,
     ) -> None:
         super().__init__(
             hass,
@@ -620,11 +743,7 @@ class BydGpsUpdateCoordinator(DataUpdateCoordinator[VehicleSnapshot]):
         self._vehicle = vehicle
         self._vin = vin
         self._telemetry_coordinator = telemetry_coordinator
-        self._smart_polling = bool(smart_polling)
         self._fixed_interval = timedelta(seconds=poll_interval)
-        self._active_interval = timedelta(seconds=active_interval)
-        self._inactive_interval = timedelta(seconds=inactive_interval)
-        self._current_interval = self._fixed_interval
         self._polling_enabled = True
         self._force_next_refresh = False
 
@@ -632,9 +751,21 @@ class BydGpsUpdateCoordinator(DataUpdateCoordinator[VehicleSnapshot]):
     def polling_enabled(self) -> bool:
         return self._polling_enabled
 
+    @property
+    def poll_interval_seconds(self) -> int:
+        """Return the configured GPS poll interval in seconds."""
+        return int(self._fixed_interval.total_seconds())
+
+    def set_poll_interval(self, seconds: int) -> None:
+        """Set GPS poll interval in seconds."""
+        self._fixed_interval = timedelta(seconds=seconds)
+        if self._polling_enabled:
+            self.update_interval = self._fixed_interval
+        self.async_update_listeners()
+
     def set_polling_enabled(self, enabled: bool) -> None:
         self._polling_enabled = bool(enabled)
-        self.update_interval = self._current_interval if self._polling_enabled else None
+        self.update_interval = self._fixed_interval if self._polling_enabled else None
 
     async def async_force_refresh(self) -> None:
         self._force_next_refresh = True
@@ -665,18 +796,25 @@ class BydGpsUpdateCoordinator(DataUpdateCoordinator[VehicleSnapshot]):
             return self._telemetry_coordinator.car
         return None
 
-    def _adjust_interval(self) -> None:
-        if not self._smart_polling:
-            self._current_interval = self._fixed_interval
-        else:
-            self._current_interval = (
-                self._active_interval
-                if self._telemetry_coordinator is not None
-                and self._telemetry_coordinator.is_vehicle_on
-                else self._inactive_interval
-            )
-        if self._polling_enabled:
-            self.update_interval = self._current_interval
+    @callback
+    def _async_handle_state_push(self, snapshot: VehicleSnapshot) -> None:
+        """Update GPS state from a push and reset next poll on new GPS timestamp."""
+        if snapshot.gps is None:
+            return
+
+        previous_timestamp = None
+        if self.data is not None and self.data.gps is not None:
+            previous_timestamp = getattr(self.data.gps, "gps_timestamp", None)
+
+        current_timestamp = getattr(snapshot.gps, "gps_timestamp", None)
+
+        if current_timestamp is not None and current_timestamp != previous_timestamp:
+            self.async_set_updated_data(snapshot)
+            return
+
+        self.data = snapshot
+        self.last_update_success = True
+        self.async_update_listeners()
 
     async def _async_update_data(self) -> VehicleSnapshot:
         """Fetch GPS data and return the current car state snapshot."""
@@ -723,8 +861,6 @@ class BydGpsUpdateCoordinator(DataUpdateCoordinator[VehicleSnapshot]):
                 "sections": {"gps": snapshot.gps.model_dump(mode="json")},
             }
             self.hass.async_create_task(self._api.async_write_debug_dump("gps", dump))
-
-        self._adjust_interval()
         _LOGGER.debug(
             "GPS refresh succeeded: vin=%s, gps=%s",
             self._vin[-6:],

@@ -5,7 +5,6 @@
         "title": "BYD'ga ulaning",
         "description": "BYD hisobingizni sozlang.",
         "data": {
-          "base_url": "Mintaqa",
           "username": "Foydalanuvchi nomi",
           "password": "Parol",
           "control_pin": "Boshqarish PIN (ixtiyoriy, 6-raqamli)",
@@ -315,9 +314,6 @@
       },
       "upgrade_status": {
         "name": "OTA yangilanish holati"
-      },
-      "is_charger_connected": {
-        "name": "Charger connected"
       },
       "oil_pressure_system": {
         "name": "Oil pressure system"

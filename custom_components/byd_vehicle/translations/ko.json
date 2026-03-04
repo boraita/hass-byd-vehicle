@@ -5,7 +5,6 @@
         "title": "BYD에 연결",
         "description": "BYD 계정을 설정하세요.",
         "data": {
-          "base_url": "지역",
           "username": "사용자 이름",
           "password": "비밀번호",
           "control_pin": "제어 PIN(선택 사항, 6자리)",
@@ -315,9 +314,6 @@
       },
       "upgrade_status": {
         "name": "OTA 업그레이드 상태"
-      },
-      "is_charger_connected": {
-        "name": "Charger connected"
       },
       "oil_pressure_system": {
         "name": "Oil pressure system"

@@ -55,19 +55,25 @@
     "step": {
       "user": {
         "title": "Connect to BYD",
-        "description": "Set up your BYD account.",
+        "description": "Set up your BYD account. If no Control PIN is set, action entities are disabled.",
         "data": {
-          "base_url": "Region",
           "username": "Username",
           "password": "Password",
           "control_pin": "Control PIN (6-digit)",
           "country_code": "Country",
-          "poll_interval": "Polling interval (seconds)",
-          "gps_poll_interval": "GPS polling interval (seconds)",
-          "smart_gps_polling": "Smart GPS polling",
-          "gps_active_interval": "GPS active interval (seconds)",
-          "gps_inactive_interval": "GPS inactive interval (seconds)",
-          "climate_duration": "Climate duration (time_span)",
+          "climate_duration": "Climate duration",
+          "debug_dumps": "Debug dump API responses"
+        }
+      },
+      "reconfigure": {
+        "title": "Reconfigure BYD Vehicle",
+        "description": "Update your account credentials and Control PIN.",
+        "data": {
+          "username": "Username",
+          "password": "Password",
+          "control_pin": "Control PIN (6-digit)",
+          "country_code": "Country",
+          "climate_duration": "Climate duration",
           "debug_dumps": "Debug dump API responses"
         }
       }
@@ -81,26 +87,19 @@
     "abort": {
       "already_configured": "This account is already configured",
       "wrong_account": "The account does not match the one being reauthenticated",
-      "reauth_successful": "Reauthentication was successful"
-    }
-  },
-  "options": {
-    "step": {
-      "init": {
-        "title": "Update polling",
-        "data": {
-          "poll_interval": "Polling interval (seconds)",
-          "gps_poll_interval": "GPS polling interval (seconds)",
-          "smart_gps_polling": "Smart GPS polling",
-          "gps_active_interval": "GPS active interval (seconds)",
-          "gps_inactive_interval": "GPS inactive interval (seconds)",
-          "climate_duration": "Climate duration (time_span)",
-          "debug_dumps": "Debug dump API responses"
-        }
-      }
+      "reauth_successful": "Reauthentication was successful",
+      "reconfigure_successful": "Reconfiguration was successful"
     }
   },
   "entity": {
+    "number": {
+      "realtime_poll_interval": {
+        "name": "Realtime poll interval"
+      },
+      "gps_poll_interval": {
+        "name": "GPS poll interval"
+      }
+    },
     "sensor": {
       "elec_percent": {
         "name": "Battery level"
@@ -266,9 +265,7 @@
       "is_charging": {
         "name": "Charging"
       },
-      "is_charger_connected": {
-        "name": "Charger connected"
-      },
+
       "is_any_door_open": {
         "name": "Doors"
       },

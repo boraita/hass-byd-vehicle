@@ -14,7 +14,7 @@ from pybyd.models.vehicle import Vehicle
 
 from .const import DOMAIN
 from .coordinator import BydDataUpdateCoordinator
-from .entity import BydVehicleEntity
+from .entity import BydActionEntity, BydVehicleEntity
 
 
 async def async_setup_entry(
@@ -34,14 +34,17 @@ async def async_setup_entry(
         entities.append(
             BydDisablePollingSwitch(coordinator, gps_coordinator, vin, vehicle)
         )
-        entities.append(BydCarOnSwitch(coordinator, vin, vehicle))
-        entities.append(BydBatteryHeatSwitch(coordinator, vin, vehicle))
-        entities.append(BydSteeringWheelHeatSwitch(coordinator, vin, vehicle))
+        if coordinator.capability_available("car_on"):
+            entities.append(BydCarOnSwitch(coordinator, vin, vehicle))
+        if coordinator.capability_available("battery_heat"):
+            entities.append(BydBatteryHeatSwitch(coordinator, vin, vehicle))
+        if coordinator.capability_available("steering_wheel_heat"):
+            entities.append(BydSteeringWheelHeatSwitch(coordinator, vin, vehicle))
 
     async_add_entities(entities)
 
 
-class BydBatteryHeatSwitch(BydVehicleEntity, SwitchEntity):
+class BydBatteryHeatSwitch(BydActionEntity, SwitchEntity):
     """Representation of the BYD battery heat toggle.
 
     Reads state from ``VehicleSnapshot.realtime.is_battery_heating``.
@@ -103,7 +106,7 @@ class BydBatteryHeatSwitch(BydVehicleEntity, SwitchEntity):
         )
 
 
-class BydCarOnSwitch(BydVehicleEntity, SwitchEntity):
+class BydCarOnSwitch(BydActionEntity, SwitchEntity):
     """Representation of a BYD car-on switch via climate control.
 
     Thin wrapper over ``car.hvac.start()`` / ``car.hvac.stop()`` that
@@ -168,7 +171,7 @@ class BydCarOnSwitch(BydVehicleEntity, SwitchEntity):
         return {**super().extra_state_attributes, "target_temperature_c": 21}
 
 
-class BydSteeringWheelHeatSwitch(BydVehicleEntity, SwitchEntity):
+class BydSteeringWheelHeatSwitch(BydActionEntity, SwitchEntity):
     """Representation of the BYD steering wheel heat toggle.
 
     Commands go through ``car.steering.heat(on=True/False)`` which

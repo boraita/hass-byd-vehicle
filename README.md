@@ -59,13 +59,31 @@ Integration**, and search for **BYD Vehicle**.
 | Password | string | yes | | BYD account password. |
 | Control PIN | string | no | | Optional 6-digit PIN required for remote commands (lock, climate, etc.). |
 | Country | select | yes | Netherlands | Country used for API country code and language. |
-| Polling interval | int | no | 300 | Vehicle data polling interval in seconds (allowed range: 30-900). |
-| GPS polling interval | int | no | 300 | GPS location polling interval in seconds (allowed range: 30-900). |
-| Smart GPS polling | bool | no | false | When enabled, uses different intervals depending on whether the vehicle is moving. |
-| GPS active interval | int | no | 30 | GPS polling interval in seconds while the vehicle is moving (smart GPS, allowed range: 10-300). |
-| GPS inactive interval | int | no | 600 | GPS polling interval in seconds while the vehicle is parked (smart GPS, allowed range: 60-3600). |
 | Climate duration | int | no | 1 | Climate run duration in minutes for start-climate commands (allowed range: 1-60). |
 | Debug dump API responses | bool | no | false | When enabled, writes redacted BYD API request/response traces to local JSON files for troubleshooting. |
+
+Polling intervals are configured via device config entities (`Realtime poll interval` and `GPS poll interval`) so they can be adjusted using automations.
+
+Example automation (set slower polling at night):
+
+```yaml
+alias: BYD night polling
+mode: single
+trigger:
+  - platform: time
+    at: "23:00:00"
+action:
+  - service: number.set_value
+    target:
+      entity_id: number.your_vehicle_realtime_poll_interval
+    data:
+      value: 600
+  - service: number.set_value
+    target:
+      entity_id: number.your_vehicle_gps_poll_interval
+    data:
+      value: 600
+```
 
 
 ## Notes

@@ -5,7 +5,6 @@
         "title": "Koble til BYD",
         "description": "Sett opp BYD-kontoen din.",
         "data": {
-          "base_url": "Region",
           "username": "Brukernavn",
           "password": "Passord",
           "control_pin": "Kontroll PIN (valgfritt, 6-sifret)",
@@ -315,9 +314,6 @@
       },
       "upgrade_status": {
         "name": "OTA oppgraderingsstatus"
-      },
-      "is_charger_connected": {
-        "name": "Charger connected"
       },
       "oil_pressure_system": {
         "name": "Oil pressure system"

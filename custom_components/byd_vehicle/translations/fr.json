@@ -5,7 +5,6 @@
         "title": "Connectez-vous à BYD",
         "description": "Configurez votre compte BYD.",
         "data": {
-          "base_url": "Région",
           "username": "Nom d'utilisateur",
           "password": "Mot de passe",
           "control_pin": "PIN de contrôle (facultatif, 6 chiffres)",
@@ -315,9 +314,6 @@
       },
       "upgrade_status": {
         "name": "État de la mise à niveau OTA"
-      },
-      "is_charger_connected": {
-        "name": "Charger connected"
       },
       "oil_pressure_system": {
         "name": "Oil pressure system"

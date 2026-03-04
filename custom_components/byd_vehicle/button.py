@@ -17,7 +17,7 @@ from pybyd.models.vehicle import Vehicle
 
 from .const import DOMAIN
 from .coordinator import BydDataUpdateCoordinator
-from .entity import BydVehicleEntity
+from .entity import BydActionEntity, BydVehicleEntity
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -26,22 +26,27 @@ class BydButtonDescription(ButtonEntityDescription):
 
     car_command: Callable[[BydCar], Awaitable[Any]]
     """Lambda returning the capability coroutine to execute."""
+    capability_key: str
+    """Normalized pyBYD capability flag name."""
 
 
 BUTTON_DESCRIPTIONS: tuple[BydButtonDescription, ...] = (
     BydButtonDescription(
         key="flash_lights",
         icon="mdi:car-light-high",
+        capability_key="flash_lights",
         car_command=lambda car: car.finder.flash_lights(),
     ),
     BydButtonDescription(
         key="find_car",
         icon="mdi:car-search",
+        capability_key="find_car",
         car_command=lambda car: car.finder.find(),
     ),
     BydButtonDescription(
         key="close_windows",
         icon="mdi:window-closed",
+        capability_key="close_windows",
         car_command=lambda car: car.windows.close(),
     ),
 )
@@ -64,12 +69,14 @@ async def async_setup_entry(
 
         entities.append(BydForcePollButton(coordinator, gps_coordinator, vin, vehicle))
         for description in BUTTON_DESCRIPTIONS:
+            if not coordinator.capability_available(description.capability_key):
+                continue
             entities.append(BydButton(coordinator, vin, vehicle, description))
 
     async_add_entities(entities)
 
 
-class BydButton(BydVehicleEntity, ButtonEntity):
+class BydButton(BydActionEntity, ButtonEntity):
     """Representation of a BYD remote command button."""
 
     _attr_has_entity_name = True

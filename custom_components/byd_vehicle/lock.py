@@ -12,7 +12,7 @@ from pybyd.models.vehicle import Vehicle
 
 from .const import DOMAIN
 from .coordinator import BydDataUpdateCoordinator
-from .entity import BydVehicleEntity
+from .entity import BydActionEntity
 
 
 async def async_setup_entry(
@@ -27,12 +27,17 @@ async def async_setup_entry(
     entities: list[LockEntity] = []
 
     for vin, coordinator in coordinators.items():
+        if not (
+            coordinator.capability_available("lock")
+            or coordinator.capability_available("unlock")
+        ):
+            continue
         entities.append(BydLock(coordinator, vin, coordinator.vehicle))
 
     async_add_entities(entities)
 
 
-class BydLock(BydVehicleEntity, LockEntity):
+class BydLock(BydActionEntity, LockEntity):
     """Representation of BYD lock control.
 
     Reads lock state from ``VehicleSnapshot.realtime.is_locked``.

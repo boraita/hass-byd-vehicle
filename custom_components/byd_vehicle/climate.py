@@ -19,7 +19,7 @@ from .const import (
     DOMAIN,
 )
 from .coordinator import BydDataUpdateCoordinator
-from .entity import BydVehicleEntity
+from .entity import BydActionEntity
 
 
 async def async_setup_entry(
@@ -38,6 +38,8 @@ async def async_setup_entry(
     entities: list[ClimateEntity] = []
 
     for vin, coordinator in coordinators.items():
+        if not coordinator.capability_available("climate"):
+            continue
         entities.append(
             BydClimate(coordinator, vin, coordinator.vehicle, climate_duration)
         )
@@ -45,7 +47,7 @@ async def async_setup_entry(
     async_add_entities(entities)
 
 
-class BydClimate(BydVehicleEntity, ClimateEntity):
+class BydClimate(BydActionEntity, ClimateEntity):
     """Representation of BYD climate control.
 
     Reads state from ``VehicleSnapshot.hvac``.  Commands go through
@@ -185,6 +187,7 @@ class BydClimate(BydVehicleEntity, ClimateEntity):
 
     async def async_set_temperature(self, **kwargs: Any) -> None:
         """Set target temperature."""
+        self._ensure_action_allowed()
         temp = kwargs.get(ATTR_TEMPERATURE)
         if temp is None:
             return
@@ -205,6 +208,7 @@ class BydClimate(BydVehicleEntity, ClimateEntity):
 
     async def async_set_preset_mode(self, preset_mode: str) -> None:
         """Activate a preset mode."""
+        self._ensure_action_allowed()
         if preset_mode not in self._attr_preset_modes:
             raise HomeAssistantError(f"Unsupported preset mode: {preset_mode}")
         temp_c = (

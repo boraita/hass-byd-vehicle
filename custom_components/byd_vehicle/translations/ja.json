@@ -5,7 +5,6 @@
         "title": "BYD に接続します",
         "description": "BYD アカウントを設定します。",
         "data": {
-          "base_url": "地域",
           "username": "ユーザー名",
           "password": "パスワード",
           "control_pin": "コントロール PIN (オプション、6 桁)",
@@ -315,9 +314,6 @@
       },
       "upgrade_status": {
         "name": "OTA アップグレード ステータス"
-      },
-      "is_charger_connected": {
-        "name": "Charger connected"
       },
       "oil_pressure_system": {
         "name": "Oil pressure system"

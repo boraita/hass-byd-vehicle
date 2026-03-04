@@ -21,46 +21,27 @@ from pybyd import (
 from pybyd.config import BydConfig
 
 from .const import (
-    BASE_URLS,
     CONF_BASE_URL,
     CONF_CLIMATE_DURATION,
     CONF_CONTROL_PIN,
     CONF_COUNTRY_CODE,
     CONF_DEBUG_DUMPS,
     CONF_DEVICE_PROFILE,
-    CONF_GPS_ACTIVE_INTERVAL,
-    CONF_GPS_INACTIVE_INTERVAL,
     CONF_GPS_POLL_INTERVAL,
     CONF_LANGUAGE,
     CONF_POLL_INTERVAL,
-    CONF_SMART_GPS_POLLING,
     COUNTRY_OPTIONS,
     DEFAULT_CLIMATE_DURATION,
     DEFAULT_COUNTRY,
     DEFAULT_DEBUG_DUMPS,
-    DEFAULT_GPS_ACTIVE_INTERVAL,
-    DEFAULT_GPS_INACTIVE_INTERVAL,
     DEFAULT_GPS_POLL_INTERVAL,
     DEFAULT_POLL_INTERVAL,
-    DEFAULT_SMART_GPS_POLLING,
     DOMAIN,
-    MAX_GPS_ACTIVE_INTERVAL,
-    MAX_GPS_INACTIVE_INTERVAL,
-    MAX_GPS_POLL_INTERVAL,
-    MAX_POLL_INTERVAL,
-    MIN_GPS_ACTIVE_INTERVAL,
-    MIN_GPS_INACTIVE_INTERVAL,
-    MIN_GPS_POLL_INTERVAL,
-    MIN_POLL_INTERVAL,
+    get_country_connection_settings,
 )
 from .device_fingerprint import async_generate_device_profile
 
 _LOGGER = logging.getLogger(__name__)
-
-
-def _bounded_int(min_value: int, max_value: int) -> vol.All:
-    """Build an integer validator with explicit bounds."""
-    return vol.All(vol.Coerce(int), vol.Range(min=min_value, max=max_value))
 
 
 _CLIMATE_DURATION_LABELS: dict[int, str] = {
@@ -121,12 +102,12 @@ def _climate_duration_label_to_minutes(label: Any) -> int:
 async def _validate_input(hass: HomeAssistant, data: dict[str, Any]) -> None:
     session = async_get_clientsession(hass)
     country_name = data[CONF_COUNTRY_CODE]
-    country_code, language = COUNTRY_OPTIONS[country_name]
+    country_code, language, base_url = get_country_connection_settings(country_name)
     time_zone = hass.config.time_zone or "UTC"
     config = BydConfig(
         username=data["username"],
         password=data["password"],
-        base_url=BASE_URLS[data[CONF_BASE_URL]],
+        base_url=base_url,
         country_code=country_code,
         language=language,
         time_zone=time_zone,
@@ -134,13 +115,16 @@ async def _validate_input(hass: HomeAssistant, data: dict[str, Any]) -> None:
     )
     async with BydClient(config, session=session) as client:
         await client.login()
-        await client.get_vehicles()
+        vehicles = await client.get_vehicles()
+        # Verify the control PIN if one was provided.
+        if data.get(CONF_CONTROL_PIN) and vehicles:
+            await client.verify_command_access(vehicles[0].vin)
 
 
 class BydVehicleConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     """Handle a config flow for BYD Vehicle."""
 
-    VERSION = 1
+    VERSION = 3
 
     _reauth_entry: config_entries.ConfigEntry | None = None
 
@@ -152,17 +136,8 @@ class BydVehicleConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 country_label = label
                 break
 
-        base_url_label = "Europe"
-        for label, url in BASE_URLS.items():
-            if url == defaults.get(CONF_BASE_URL):
-                base_url_label = label
-                break
-
         return vol.Schema(
             {
-                vol.Required(CONF_BASE_URL, default=base_url_label): vol.In(
-                    list(BASE_URLS)
-                ),
                 vol.Required("username", default=defaults.get("username", "")): str,
                 vol.Required("password", default=defaults.get("password", "")): str,
                 vol.Optional(
@@ -173,40 +148,6 @@ class BydVehicleConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     CONF_COUNTRY_CODE,
                     default=country_label,
                 ): vol.In(list(COUNTRY_OPTIONS)),
-                vol.Optional(
-                    CONF_POLL_INTERVAL,
-                    default=defaults.get(CONF_POLL_INTERVAL, DEFAULT_POLL_INTERVAL),
-                ): _bounded_int(MIN_POLL_INTERVAL, MAX_POLL_INTERVAL),
-                vol.Optional(
-                    CONF_GPS_POLL_INTERVAL,
-                    default=defaults.get(
-                        CONF_GPS_POLL_INTERVAL, DEFAULT_GPS_POLL_INTERVAL
-                    ),
-                ): _bounded_int(MIN_GPS_POLL_INTERVAL, MAX_GPS_POLL_INTERVAL),
-                vol.Optional(
-                    CONF_SMART_GPS_POLLING,
-                    default=defaults.get(
-                        CONF_SMART_GPS_POLLING,
-                        DEFAULT_SMART_GPS_POLLING,
-                    ),
-                ): bool,
-                vol.Optional(
-                    CONF_GPS_ACTIVE_INTERVAL,
-                    default=defaults.get(
-                        CONF_GPS_ACTIVE_INTERVAL,
-                        DEFAULT_GPS_ACTIVE_INTERVAL,
-                    ),
-                ): _bounded_int(MIN_GPS_ACTIVE_INTERVAL, MAX_GPS_ACTIVE_INTERVAL),
-                vol.Optional(
-                    CONF_GPS_INACTIVE_INTERVAL,
-                    default=defaults.get(
-                        CONF_GPS_INACTIVE_INTERVAL,
-                        DEFAULT_GPS_INACTIVE_INTERVAL,
-                    ),
-                ): _bounded_int(
-                    MIN_GPS_INACTIVE_INTERVAL,
-                    MAX_GPS_INACTIVE_INTERVAL,
-                ),
                 vol.Optional(
                     CONF_CLIMATE_DURATION,
                     default=_climate_duration_default_label(
@@ -231,31 +172,11 @@ class BydVehicleConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         return {
             "username": self._reauth_entry.data.get("username", ""),
             "password": self._reauth_entry.data.get("password", ""),
-            CONF_BASE_URL: self._reauth_entry.data.get(
-                CONF_BASE_URL, BASE_URLS["Europe"]
-            ),
             CONF_COUNTRY_CODE: self._reauth_entry.data.get(
                 CONF_COUNTRY_CODE,
                 COUNTRY_OPTIONS[DEFAULT_COUNTRY][0],
             ),
             CONF_CONTROL_PIN: self._reauth_entry.data.get(CONF_CONTROL_PIN, ""),
-            CONF_POLL_INTERVAL: options.get(CONF_POLL_INTERVAL, DEFAULT_POLL_INTERVAL),
-            CONF_GPS_POLL_INTERVAL: options.get(
-                CONF_GPS_POLL_INTERVAL,
-                DEFAULT_GPS_POLL_INTERVAL,
-            ),
-            CONF_SMART_GPS_POLLING: options.get(
-                CONF_SMART_GPS_POLLING,
-                DEFAULT_SMART_GPS_POLLING,
-            ),
-            CONF_GPS_ACTIVE_INTERVAL: options.get(
-                CONF_GPS_ACTIVE_INTERVAL,
-                DEFAULT_GPS_ACTIVE_INTERVAL,
-            ),
-            CONF_GPS_INACTIVE_INTERVAL: options.get(
-                CONF_GPS_INACTIVE_INTERVAL,
-                DEFAULT_GPS_INACTIVE_INTERVAL,
-            ),
             CONF_CLIMATE_DURATION: options.get(
                 CONF_CLIMATE_DURATION,
                 DEFAULT_CLIMATE_DURATION,
@@ -291,9 +212,10 @@ class BydVehicleConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 _LOGGER.exception("Unexpected error during validation")
                 errors["base"] = "unknown"
             else:
-                base_url = BASE_URLS[user_input[CONF_BASE_URL]]
                 country_name = user_input[CONF_COUNTRY_CODE]
-                country_code, language = COUNTRY_OPTIONS[country_name]
+                country_code, language, base_url = get_country_connection_settings(
+                    country_name
+                )
                 await self.async_set_unique_id(f"{user_input['username']}@{base_url}")
                 if self._reauth_entry is None:
                     self._abort_if_unique_id_configured()
@@ -319,13 +241,6 @@ class BydVehicleConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     }
                     updated_options = {
                         **self._reauth_entry.options,
-                        CONF_POLL_INTERVAL: user_input[CONF_POLL_INTERVAL],
-                        CONF_GPS_POLL_INTERVAL: user_input[CONF_GPS_POLL_INTERVAL],
-                        CONF_SMART_GPS_POLLING: user_input[CONF_SMART_GPS_POLLING],
-                        CONF_GPS_ACTIVE_INTERVAL: user_input[CONF_GPS_ACTIVE_INTERVAL],
-                        CONF_GPS_INACTIVE_INTERVAL: user_input[
-                            CONF_GPS_INACTIVE_INTERVAL
-                        ],
                         CONF_CLIMATE_DURATION: _climate_duration_label_to_minutes(
                             user_input[CONF_CLIMATE_DURATION]
                         ),
@@ -356,13 +271,8 @@ class BydVehicleConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                         CONF_CONTROL_PIN: user_input.get(CONF_CONTROL_PIN, ""),
                     },
                     options={
-                        CONF_POLL_INTERVAL: user_input[CONF_POLL_INTERVAL],
-                        CONF_GPS_POLL_INTERVAL: user_input[CONF_GPS_POLL_INTERVAL],
-                        CONF_SMART_GPS_POLLING: user_input[CONF_SMART_GPS_POLLING],
-                        CONF_GPS_ACTIVE_INTERVAL: user_input[CONF_GPS_ACTIVE_INTERVAL],
-                        CONF_GPS_INACTIVE_INTERVAL: user_input[
-                            CONF_GPS_INACTIVE_INTERVAL
-                        ],
+                        CONF_POLL_INTERVAL: DEFAULT_POLL_INTERVAL,
+                        CONF_GPS_POLL_INTERVAL: DEFAULT_GPS_POLL_INTERVAL,
                         CONF_CLIMATE_DURATION: _climate_duration_label_to_minutes(
                             user_input[CONF_CLIMATE_DURATION]
                         ),
@@ -383,87 +293,90 @@ class BydVehicleConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         self._reauth_entry = self._get_reauth_entry()
         return await self.async_step_user()
 
-    @staticmethod
-    @config_entries.callback
-    def async_get_options_flow(
-        config_entry: config_entries.ConfigEntry,
-    ) -> config_entries.OptionsFlow:
-        """Return the options flow handler."""
-        return BydVehicleOptionsFlow(config_entry)
-
-
-class BydVehicleOptionsFlow(config_entries.OptionsFlow):
-    """Handle options flow for BYD Vehicle."""
-
-    def __init__(self, config_entry: config_entries.ConfigEntry) -> None:
-        self._config_entry = config_entry
-
-    async def async_step_init(
+    async def async_step_reconfigure(
         self, user_input: dict[str, Any] | None = None
     ) -> config_entries.ConfigFlowResult:
-        """Handle the initial options step."""
+        """Handle reconfiguration (e.g. updating the Control PIN)."""
+        errors: dict[str, str] = {}
+        reconfigure_entry = self._get_reconfigure_entry()
+
         if user_input is not None:
-            # Store minutes (int) rather than the human label.
-            if CONF_CLIMATE_DURATION in user_input:
-                user_input = {
-                    **user_input,
+            try:
+                await _validate_input(self.hass, user_input)
+            except BydAuthenticationError:
+                errors["base"] = "invalid_auth"
+            except BydControlPasswordError:
+                errors["base"] = "invalid_control_pin"
+            except json.JSONDecodeError:
+                _LOGGER.warning(
+                    "JSONDecodeError during reconfigure validation — "
+                    "likely an invalid control PIN"
+                )
+                errors["base"] = "invalid_control_pin"
+            except (BydApiError, BydTransportError) as exc:
+                _LOGGER.warning("BYD API error during reconfigure: %s", exc)
+                errors["base"] = "cannot_connect"
+            except Exception:  # noqa: BLE001
+                _LOGGER.exception("Unexpected error during reconfigure")
+                errors["base"] = "unknown"
+            else:
+                country_name = user_input[CONF_COUNTRY_CODE]
+                country_code, language, base_url = get_country_connection_settings(
+                    country_name
+                )
+                existing_device_profile = reconfigure_entry.data.get(
+                    CONF_DEVICE_PROFILE
+                )
+                if existing_device_profile is None:
+                    existing_device_profile = await async_generate_device_profile(
+                        self.hass
+                    )
+
+                updated_data = {
+                    **reconfigure_entry.data,
+                    "username": user_input["username"],
+                    "password": user_input["password"],
+                    CONF_BASE_URL: base_url,
+                    CONF_COUNTRY_CODE: country_code,
+                    CONF_LANGUAGE: language,
+                    CONF_CONTROL_PIN: user_input.get(CONF_CONTROL_PIN, ""),
+                    CONF_DEVICE_PROFILE: existing_device_profile,
+                }
+                updated_options = {
+                    **reconfigure_entry.options,
                     CONF_CLIMATE_DURATION: _climate_duration_label_to_minutes(
                         user_input[CONF_CLIMATE_DURATION]
                     ),
+                    CONF_DEBUG_DUMPS: user_input[CONF_DEBUG_DUMPS],
                 }
-            return self.async_create_entry(title="", data=user_input)
 
-        data_schema = vol.Schema(
-            {
-                vol.Optional(
-                    CONF_POLL_INTERVAL,
-                    default=self._config_entry.options.get(
-                        CONF_POLL_INTERVAL, DEFAULT_POLL_INTERVAL
-                    ),
-                ): _bounded_int(MIN_POLL_INTERVAL, MAX_POLL_INTERVAL),
-                vol.Optional(
-                    CONF_GPS_POLL_INTERVAL,
-                    default=self._config_entry.options.get(
-                        CONF_GPS_POLL_INTERVAL, DEFAULT_GPS_POLL_INTERVAL
-                    ),
-                ): _bounded_int(MIN_GPS_POLL_INTERVAL, MAX_GPS_POLL_INTERVAL),
-                vol.Optional(
-                    CONF_SMART_GPS_POLLING,
-                    default=self._config_entry.options.get(
-                        CONF_SMART_GPS_POLLING, DEFAULT_SMART_GPS_POLLING
-                    ),
-                ): bool,
-                vol.Optional(
-                    CONF_GPS_ACTIVE_INTERVAL,
-                    default=self._config_entry.options.get(
-                        CONF_GPS_ACTIVE_INTERVAL, DEFAULT_GPS_ACTIVE_INTERVAL
-                    ),
-                ): _bounded_int(MIN_GPS_ACTIVE_INTERVAL, MAX_GPS_ACTIVE_INTERVAL),
-                vol.Optional(
-                    CONF_GPS_INACTIVE_INTERVAL,
-                    default=self._config_entry.options.get(
-                        CONF_GPS_INACTIVE_INTERVAL, DEFAULT_GPS_INACTIVE_INTERVAL
-                    ),
-                ): _bounded_int(
-                    MIN_GPS_INACTIVE_INTERVAL,
-                    MAX_GPS_INACTIVE_INTERVAL,
-                ),
-                vol.Optional(
-                    CONF_CLIMATE_DURATION,
-                    default=_climate_duration_default_label(
-                        self._config_entry.options.get(
-                            CONF_CLIMATE_DURATION, DEFAULT_CLIMATE_DURATION
-                        )
-                    ),
-                ): vol.In(list(_CLIMATE_DURATION_LABELS.values())),
-                vol.Optional(
-                    CONF_DEBUG_DUMPS,
-                    default=self._config_entry.options.get(
-                        CONF_DEBUG_DUMPS,
-                        DEFAULT_DEBUG_DUMPS,
-                    ),
-                ): bool,
-            }
+                self.hass.config_entries.async_update_entry(
+                    reconfigure_entry,
+                    data=updated_data,
+                    options=updated_options,
+                )
+                await self.hass.config_entries.async_reload(reconfigure_entry.entry_id)
+                return self.async_abort(reason="reconfigure_successful")
+
+        defaults = {
+            "username": reconfigure_entry.data.get("username", ""),
+            "password": reconfigure_entry.data.get("password", ""),
+            CONF_COUNTRY_CODE: reconfigure_entry.data.get(
+                CONF_COUNTRY_CODE,
+                COUNTRY_OPTIONS[DEFAULT_COUNTRY][0],
+            ),
+            CONF_CONTROL_PIN: reconfigure_entry.data.get(CONF_CONTROL_PIN, ""),
+            CONF_CLIMATE_DURATION: reconfigure_entry.options.get(
+                CONF_CLIMATE_DURATION,
+                DEFAULT_CLIMATE_DURATION,
+            ),
+            CONF_DEBUG_DUMPS: reconfigure_entry.options.get(
+                CONF_DEBUG_DUMPS,
+                DEFAULT_DEBUG_DUMPS,
+            ),
+        }
+        data_schema = self._build_user_schema(defaults)
+
+        return self.async_show_form(
+            step_id="reconfigure", data_schema=data_schema, errors=errors
         )
-
-        return self.async_show_form(step_id="init", data_schema=data_schema)

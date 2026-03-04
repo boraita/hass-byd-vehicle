@@ -40,11 +40,6 @@ def _is_charging_from_realtime(obj: Any) -> bool | None:
     return getattr(obj, "is_charging", None)
 
 
-def _is_plug_connected_from_realtime(obj: Any) -> bool | None:
-    """Return whether charging gun is connected from realtime state."""
-    return getattr(obj, "is_charger_connected", None)
-
-
 def _attr_truthy(attr_name: str) -> Callable[[Any], bool | None]:
     """Return a value_fn that checks ``bool(getattr(obj, attr_name))``."""
 
@@ -100,12 +95,6 @@ BINARY_SENSOR_DESCRIPTIONS: tuple[BydBinarySensorDescription, ...] = (
         source="realtime",
         device_class=BinarySensorDeviceClass.BATTERY_CHARGING,
         value_fn=_is_charging_from_realtime,
-    ),
-    BydBinarySensorDescription(
-        key="is_charger_connected",
-        source="realtime",
-        device_class=BinarySensorDeviceClass.PLUG,
-        value_fn=_is_plug_connected_from_realtime,
     ),
     BydBinarySensorDescription(
         key="is_any_door_open",

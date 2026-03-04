@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+from homeassistant.components import persistent_notification
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, ServiceCall
 from homeassistant.exceptions import ConfigEntryNotReady, HomeAssistantError
@@ -13,27 +14,24 @@ from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from pybyd import BydClient
 
 from .const import (
+    CONF_BASE_URL,
+    CONF_CONTROL_PIN,
+    CONF_COUNTRY_CODE,
     CONF_DEVICE_PROFILE,
-    CONF_GPS_ACTIVE_INTERVAL,
-    CONF_GPS_INACTIVE_INTERVAL,
     CONF_GPS_POLL_INTERVAL,
+    CONF_LANGUAGE,
     CONF_POLL_INTERVAL,
-    CONF_SMART_GPS_POLLING,
-    DEFAULT_GPS_ACTIVE_INTERVAL,
-    DEFAULT_GPS_INACTIVE_INTERVAL,
+    DEFAULT_COUNTRY,
     DEFAULT_GPS_POLL_INTERVAL,
     DEFAULT_POLL_INTERVAL,
-    DEFAULT_SMART_GPS_POLLING,
     DOMAIN,
-    MAX_GPS_ACTIVE_INTERVAL,
-    MAX_GPS_INACTIVE_INTERVAL,
     MAX_GPS_POLL_INTERVAL,
     MAX_POLL_INTERVAL,
-    MIN_GPS_ACTIVE_INTERVAL,
-    MIN_GPS_INACTIVE_INTERVAL,
     MIN_GPS_POLL_INTERVAL,
     MIN_POLL_INTERVAL,
     PLATFORMS,
+    get_country_connection_settings,
+    get_country_connection_settings_by_code,
 )
 from .coordinator import BydApi, BydDataUpdateCoordinator, BydGpsUpdateCoordinator
 from .device_fingerprint import async_generate_device_profile
@@ -50,10 +48,142 @@ def _sanitize_interval(value: int, default: int, min_value: int, max_value: int)
     return max(min_value, min(max_value, parsed))
 
 
+async def async_migrate_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
+    """Migrate config entries to latest schema."""
+    _LOGGER.debug(
+        "Migrating BYD config entry %s from version %s",
+        entry.entry_id,
+        entry.version,
+    )
+
+    if entry.version > 3:
+        _LOGGER.error(
+            "Cannot migrate BYD config entry %s from version %s",
+            entry.entry_id,
+            entry.version,
+        )
+        return False
+
+    if entry.version < 2:
+        options = dict(entry.options)
+
+        options.pop("smart_gps_polling", None)
+        options.pop("gps_active_interval", None)
+        options.pop("gps_inactive_interval", None)
+
+        options[CONF_POLL_INTERVAL] = _sanitize_interval(
+            options.get(CONF_POLL_INTERVAL, DEFAULT_POLL_INTERVAL),
+            DEFAULT_POLL_INTERVAL,
+            MIN_POLL_INTERVAL,
+            MAX_POLL_INTERVAL,
+        )
+        _sanitize_interval(
+            options.get(CONF_GPS_POLL_INTERVAL, DEFAULT_GPS_POLL_INTERVAL),
+            DEFAULT_GPS_POLL_INTERVAL,
+            MIN_GPS_POLL_INTERVAL,
+            MAX_GPS_POLL_INTERVAL,
+        )
+        options[CONF_GPS_POLL_INTERVAL] = DEFAULT_GPS_POLL_INTERVAL
+
+        hass.config_entries.async_update_entry(entry, options=options)
+
+    if entry.version < 3:
+        data = dict(entry.data)
+        raw_country_code = data.get(CONF_COUNTRY_CODE)
+
+        try:
+            country_code, language, base_url = get_country_connection_settings_by_code(
+                str(raw_country_code)
+            )
+        except (KeyError, AttributeError):
+            country_code, language, base_url = get_country_connection_settings(
+                DEFAULT_COUNTRY
+            )
+            _LOGGER.warning(
+                (
+                    "Entry %s had unknown country code %s; "
+                    "defaulting to %s during migration"
+                ),
+                entry.entry_id,
+                raw_country_code,
+                DEFAULT_COUNTRY,
+            )
+
+        data[CONF_COUNTRY_CODE] = country_code
+        data[CONF_LANGUAGE] = language
+        data[CONF_BASE_URL] = base_url
+
+        new_unique_id = entry.unique_id
+        username = data.get("username")
+        if isinstance(username, str) and username:
+            new_unique_id = f"{username}@{base_url}"
+
+        hass.config_entries.async_update_entry(
+            entry,
+            data=data,
+            unique_id=new_unique_id,
+        )
+
+    _LOGGER.debug("Migration of BYD config entry %s complete", entry.entry_id)
+    return True
+
+
+def _apply_poll_intervals_from_options(
+    entry: ConfigEntry,
+    entry_data: dict[str, Any],
+) -> None:
+    """Apply poll intervals from entry options to all coordinators."""
+    poll_interval = _sanitize_interval(
+        entry.options.get(CONF_POLL_INTERVAL, DEFAULT_POLL_INTERVAL),
+        DEFAULT_POLL_INTERVAL,
+        MIN_POLL_INTERVAL,
+        MAX_POLL_INTERVAL,
+    )
+    gps_interval = _sanitize_interval(
+        entry.options.get(CONF_GPS_POLL_INTERVAL, DEFAULT_GPS_POLL_INTERVAL),
+        DEFAULT_GPS_POLL_INTERVAL,
+        MIN_GPS_POLL_INTERVAL,
+        MAX_GPS_POLL_INTERVAL,
+    )
+
+    for coordinator in entry_data.get("coordinators", {}).values():
+        coordinator.set_poll_interval(poll_interval)
+    for gps_coordinator in entry_data.get("gps_coordinators", {}).values():
+        gps_coordinator.set_poll_interval(gps_interval)
+
+
+async def _async_handle_entry_update(hass: HomeAssistant, entry: ConfigEntry) -> None:
+    """Handle config entry option updates."""
+    entry_data = hass.data.get(DOMAIN, {}).get(entry.entry_id)
+    if entry_data is None:
+        return
+
+    previous_options = entry_data.get("options_snapshot", {})
+    current_options = dict(entry.options)
+    entry_data["options_snapshot"] = current_options
+
+    changed_keys = {
+        key
+        for key in set(previous_options) | set(current_options)
+        if previous_options.get(key) != current_options.get(key)
+    }
+    poll_keys = {CONF_POLL_INTERVAL, CONF_GPS_POLL_INTERVAL}
+
+    if changed_keys and changed_keys.issubset(poll_keys):
+        _apply_poll_intervals_from_options(entry, entry_data)
+        return
+
+    await hass.config_entries.async_reload(entry.entry_id)
+
+
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up BYD Vehicle from a config entry."""
     _LOGGER.debug("Setting up BYD config entry %s", entry.entry_id)
     hass.data.setdefault(DOMAIN, {})
+
+    # Dismiss any stale PIN-invalid notification from a prior run.
+    notification_id = f"{DOMAIN}_{entry.entry_id}_pin_invalid"
+    persistent_notification.async_dismiss(hass, notification_id)
 
     # Ensure a device fingerprint exists (backfill for pre-existing entries)
     if CONF_DEVICE_PROFILE not in entry.data:
@@ -80,19 +210,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         MIN_GPS_POLL_INTERVAL,
         MAX_GPS_POLL_INTERVAL,
     )
-    smart_gps = entry.options.get(CONF_SMART_GPS_POLLING, DEFAULT_SMART_GPS_POLLING)
-    gps_active = _sanitize_interval(
-        entry.options.get(CONF_GPS_ACTIVE_INTERVAL, DEFAULT_GPS_ACTIVE_INTERVAL),
-        DEFAULT_GPS_ACTIVE_INTERVAL,
-        MIN_GPS_ACTIVE_INTERVAL,
-        MAX_GPS_ACTIVE_INTERVAL,
-    )
-    gps_inactive = _sanitize_interval(
-        entry.options.get(CONF_GPS_INACTIVE_INTERVAL, DEFAULT_GPS_INACTIVE_INTERVAL),
-        DEFAULT_GPS_INACTIVE_INTERVAL,
-        MIN_GPS_INACTIVE_INTERVAL,
-        MAX_GPS_INACTIVE_INTERVAL,
-    )
 
     async def _fetch_vehicles(client: BydClient) -> list:
         return await client.get_vehicles()
@@ -106,6 +223,22 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         len(vehicles),
         entry.entry_id,
     )
+
+    # Verify command access when a control PIN is configured.
+    if entry.data.get(CONF_CONTROL_PIN):
+        pin_ok = await api.async_verify_commands(vehicles[0].vin)
+        if not pin_ok:
+            persistent_notification.async_create(
+                hass,
+                (
+                    "The Control PIN is incorrect or cloud control is "
+                    "temporarily locked. Remote control actions are disabled. "
+                    "Please reconfigure the integration to update your "
+                    "Control PIN."
+                ),
+                title="BYD Vehicle: Command PIN invalid",
+                notification_id=notification_id,
+            )
 
     coordinators: dict[str, BydDataUpdateCoordinator] = {}
     gps_coordinators: dict[str, BydGpsUpdateCoordinator] = {}
@@ -126,16 +259,13 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             vin,
             gps_interval,
             telemetry_coordinator=telemetry_coordinator,
-            smart_polling=smart_gps,
-            active_interval=gps_active,
-            inactive_interval=gps_inactive,
         )
         coordinators[vin] = telemetry_coordinator
         gps_coordinators[vin] = gps_coordinator
 
     # Wire MQTT push early so vehicleInfo messages arriving during the
     # first refresh are dispatched to coordinators instead of being dropped.
-    api.register_coordinators(coordinators)
+    api.register_coordinators(coordinators, gps_coordinators)
 
     try:
         _LOGGER.debug("Running first refresh for BYD telemetry coordinators")
@@ -151,6 +281,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         "api": api,
         "coordinators": coordinators,
         "gps_coordinators": gps_coordinators,
+        "options_snapshot": dict(entry.options),
     }
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
@@ -158,7 +289,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     # --- Register domain services (once, on first entry) ---
     _async_register_services(hass)
 
-    entry.async_on_unload(entry.add_update_listener(async_reload_entry))
+    entry.async_on_unload(entry.add_update_listener(_async_handle_entry_update))
     _LOGGER.debug("BYD config entry %s setup complete", entry.entry_id)
     return True
 

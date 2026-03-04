@@ -5,7 +5,6 @@
         "title": "BYD'e bağlanın",
         "description": "BYD hesabınızı kurun.",
         "data": {
-          "base_url": "Bölge",
           "username": "Kullanıcı adı",
           "password": "Şifre",
           "control_pin": "Kontrol PIN (isteğe bağlı, 6 haneli)",
@@ -315,9 +314,6 @@
       },
       "upgrade_status": {
         "name": "OTA yükseltme durumu"
-      },
-      "is_charger_connected": {
-        "name": "Charger connected"
       },
       "oil_pressure_system": {
         "name": "Oil pressure system"
