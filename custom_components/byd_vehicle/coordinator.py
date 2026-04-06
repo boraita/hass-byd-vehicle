@@ -722,11 +722,18 @@ class BydDataUpdateCoordinator(DataUpdateCoordinator[VehicleSnapshot]):
             self.update_interval = self._fixed_interval
         self.async_update_listeners()
 
-    def set_polling_enabled(self, enabled: bool) -> None:
+    def set_polling_enabled(self, enabled: bool) -> bool:
+        was_enabled = self._polling_enabled
         self._polling_enabled = bool(enabled)
         if not self._polling_enabled:
             self._cancel_pending_hvac_final_retry()
         self.update_interval = self._fixed_interval if self._polling_enabled else None
+        return not was_enabled and self._polling_enabled
+
+    async def async_set_polling_enabled(self, enabled: bool) -> None:
+        """Update polling state and resume scheduling when re-enabled."""
+        if self.set_polling_enabled(enabled):
+            await self.async_request_refresh()
 
     async def async_force_refresh(self) -> None:
         self._force_next_refresh = True
@@ -857,9 +864,16 @@ class BydGpsUpdateCoordinator(DataUpdateCoordinator[VehicleSnapshot]):
             self.update_interval = self._fixed_interval
         self.async_update_listeners()
 
-    def set_polling_enabled(self, enabled: bool) -> None:
+    def set_polling_enabled(self, enabled: bool) -> bool:
+        was_enabled = self._polling_enabled
         self._polling_enabled = bool(enabled)
         self.update_interval = self._fixed_interval if self._polling_enabled else None
+        return not was_enabled and self._polling_enabled
+
+    async def async_set_polling_enabled(self, enabled: bool) -> None:
+        """Update polling state and resume scheduling when re-enabled."""
+        if self.set_polling_enabled(enabled):
+            await self.async_request_refresh()
 
     async def async_force_refresh(self) -> None:
         self._force_next_refresh = True

@@ -270,7 +270,7 @@ class BydDisablePollingSwitch(BydVehicleEntity, RestoreEntity, SwitchEntity):
         last = await self.async_get_last_state()
         if last is not None:
             self._disabled = last.state == "on"
-        self._apply()
+        await self._apply()
 
     @property
     def available(self) -> bool:
@@ -283,19 +283,19 @@ class BydDisablePollingSwitch(BydVehicleEntity, RestoreEntity, SwitchEntity):
         """Return True when polling is disabled."""
         return self._disabled
 
-    def _apply(self) -> None:
-        self.coordinator.set_polling_enabled(not self._disabled)
+    async def _apply(self) -> None:
+        await self.coordinator.async_set_polling_enabled(not self._disabled)
         gps = self._gps_coordinator
         if gps is not None:
-            gps.set_polling_enabled(not self._disabled)
+            await gps.async_set_polling_enabled(not self._disabled)
         self.async_write_ha_state()
 
     async def async_turn_on(self, **_kwargs: Any) -> None:
         """Disable polling."""
         self._disabled = True
-        self._apply()
+        await self._apply()
 
     async def async_turn_off(self, **_kwargs: Any) -> None:
         """Re-enable polling."""
         self._disabled = False
-        self._apply()
+        await self._apply()
