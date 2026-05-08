@@ -293,6 +293,24 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 exc,
             )
 
+    # One-shot charging fetch so the homePage-backed sensors are
+    # populated at startup. Pulls live state AND schedule from one
+    # /control/smartCharge/homePage call — MQTT updates the live state
+    # afterwards, but the schedule is HTTP-only so without this the
+    # schedule sensors stay unavailable until the user presses the
+    # ``Fetch charging`` button.
+    _LOGGER.debug("Running initial charging fetch for BYD coordinators")
+    for vin, coordinator in coordinators.items():
+        try:
+            await coordinator.async_fetch_charging()
+        except Exception as exc:  # noqa: BLE001
+            _LOGGER.debug(
+                "Initial charging fetch failed "
+                "(will populate on next press): vin=%s error=%s",
+                vin,
+                exc,
+            )
+
     hass.data[DOMAIN][entry.entry_id] = {
         "api": api,
         "coordinators": coordinators,
@@ -343,6 +361,25 @@ _SERVICE_FETCH_HVAC = "fetch_hvac"
 _SERVICE_FETCH_CHARGING = "fetch_charging"
 _SERVICE_FETCH_ENERGY = "fetch_energy"
 _SERVICE_START_CHARGING = "start_charging"
+_SERVICE_SAVE_CHARGING_SCHEDULE = "save_charging_schedule"
+
+# Repeat-mode → BYD ``chargeWay`` wire format.
+_REPEAT_TO_CHARGE_WAY: dict[str, str] = {
+    "single": "s",
+    "every_day": "e",
+    "weekdays": "0,1,2,3,4",
+    "weekends": "5,6",
+}
+# Day-of-week token → BYD index (``0`` = Monday).
+_WEEKDAY_INDEX: dict[str, int] = {
+    "mon": 0,
+    "tue": 1,
+    "wed": 2,
+    "thu": 3,
+    "fri": 4,
+    "sat": 5,
+    "sun": 6,
+}
 
 _ALL_SERVICES = (
     _SERVICE_FETCH_REALTIME,
@@ -351,7 +388,62 @@ _ALL_SERVICES = (
     _SERVICE_FETCH_CHARGING,
     _SERVICE_FETCH_ENERGY,
     _SERVICE_START_CHARGING,
+    _SERVICE_SAVE_CHARGING_SCHEDULE,
 )
+
+
+def _normalise_hhmm(value: Any, *, field: str) -> str:
+    """Coerce a service-call time input to a ``"HH:MM"`` string.
+
+    HA's ``time`` selector hands us ``datetime.time`` instances, but
+    YAML / template-rendered calls may also pass plain strings.  We
+    accept both and reject anything else with a clear error.
+    """
+    from datetime import time as _time
+
+    if isinstance(value, _time):
+        return value.strftime("%H:%M")
+    if isinstance(value, str):
+        text = value.strip()
+        # Accept ``"HH:MM"`` and ``"HH:MM:SS"``; ignore seconds either way.
+        parts = text.split(":")
+        if 2 <= len(parts) <= 3:
+            try:
+                hour = int(parts[0])
+                minute = int(parts[1])
+            except ValueError as exc:
+                raise HomeAssistantError(
+                    f"{field} must be an HH:MM time, got {value!r}"
+                ) from exc
+            if 0 <= hour <= 23 and 0 <= minute <= 59:
+                return f"{hour:02d}:{minute:02d}"
+    raise HomeAssistantError(f"{field} must be an HH:MM time, got {value!r}")
+
+
+def _resolve_charge_way(call: ServiceCall) -> str:
+    """Map service-call ``repeat`` (+ optional ``weekdays``) to ``chargeWay``."""
+    repeat = (call.data.get("repeat") or "every_day").strip()
+    if repeat == "custom":
+        weekdays = call.data.get("weekdays") or []
+        if isinstance(weekdays, str):
+            weekdays = [weekdays]
+        if not weekdays:
+            raise HomeAssistantError("weekdays must be set when repeat='custom'")
+        try:
+            indices = sorted({_WEEKDAY_INDEX[d] for d in weekdays})
+        except KeyError as exc:
+            raise HomeAssistantError(
+                f"unknown weekday token: {exc.args[0]!r} "
+                f"(expected one of {sorted(_WEEKDAY_INDEX)})"
+            ) from exc
+        return ",".join(str(i) for i in indices)
+    try:
+        return _REPEAT_TO_CHARGE_WAY[repeat]
+    except KeyError as exc:
+        raise HomeAssistantError(
+            f"unknown repeat mode: {repeat!r} "
+            f"(expected one of {sorted(_REPEAT_TO_CHARGE_WAY)} or 'custom')"
+        ) from exc
 
 
 def _resolve_vins_from_call(
@@ -439,6 +531,36 @@ def _async_register_services(hass: HomeAssistant) -> None:
             coordinator, _ = _get_coordinators(hass, entry_id, vin)
             await coordinator.async_start_charging()
 
+    async def _handle_save_charging_schedule(call: ServiceCall) -> None:
+        # Resolve targets first so the input-shape errors below fire on
+        # the first device only — they're identical for every target.
+        targets = _resolve_vins_from_call(hass, call)
+
+        until_full = bool(call.data.get("until_full", True))
+        start_charge_time = _normalise_hhmm(
+            call.data.get("start_time"), field="start_time"
+        )
+        if until_full:
+            end_charge_time = "full"
+        else:
+            raw_end = call.data.get("end_time")
+            if raw_end is None:
+                raise HomeAssistantError(
+                    "end_time is required when until_full is false"
+                )
+            end_charge_time = _normalise_hhmm(raw_end, field="end_time")
+        charge_way = _resolve_charge_way(call)
+        enabled = bool(call.data.get("enabled", True))
+
+        for entry_id, vin in targets:
+            coordinator, _ = _get_coordinators(hass, entry_id, vin)
+            await coordinator.async_save_charging_schedule(
+                start_charge_time=start_charge_time,
+                end_charge_time=end_charge_time,
+                charge_way=charge_way,
+                enabled=enabled,
+            )
+
     hass.services.async_register(
         DOMAIN, _SERVICE_FETCH_REALTIME, _handle_fetch_realtime
     )
@@ -450,6 +572,11 @@ def _async_register_services(hass: HomeAssistant) -> None:
     hass.services.async_register(DOMAIN, _SERVICE_FETCH_ENERGY, _handle_fetch_energy)
     hass.services.async_register(
         DOMAIN, _SERVICE_START_CHARGING, _handle_start_charging
+    )
+    hass.services.async_register(
+        DOMAIN,
+        _SERVICE_SAVE_CHARGING_SCHEDULE,
+        _handle_save_charging_schedule,
     )
 
     _LOGGER.debug("Registered %s domain services", len(_ALL_SERVICES))

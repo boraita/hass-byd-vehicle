@@ -32,7 +32,7 @@
     },
     "fetch_charging": {
       "name": "Fetch charging status",
-      "description": "Force-fetch the latest charging status from the BYD cloud and log the raw response.",
+      "description": "Force-fetch the live charging state and the configured smart-charging schedule from the BYD cloud (one homePage call) and log the raw response.",
       "fields": {
         "device_id": {
           "name": "Device",
@@ -47,6 +47,50 @@
         "device_id": {
           "name": "Device",
           "description": "The BYD vehicle device to fetch data for."
+        }
+      }
+    },
+    "start_charging": {
+      "name": "Start charging",
+      "description": "Start charging the vehicle immediately. Only succeeds when the charger is connected and the vehicle isn't already charging or at 100% SoC.",
+      "fields": {
+        "device_id": {
+          "name": "Device",
+          "description": "The BYD vehicle device to start charging."
+        }
+      }
+    },
+    "save_charging_schedule": {
+      "name": "Save charging schedule",
+      "description": "Push a new smart-charging schedule to the vehicle.",
+      "fields": {
+        "device_id": {
+          "name": "Device",
+          "description": "The BYD vehicle device to update the schedule on."
+        },
+        "start_time": {
+          "name": "Start time",
+          "description": "Time of day to begin charging, in HH:MM (24-hour)."
+        },
+        "end_time": {
+          "name": "End time",
+          "description": "Time of day to stop charging, in HH:MM. Ignored when 'Charge until full' is enabled."
+        },
+        "until_full": {
+          "name": "Charge until full",
+          "description": "When enabled, charge from the start time until the battery is full instead of stopping at the end time."
+        },
+        "repeat": {
+          "name": "Repeat",
+          "description": "How often the schedule runs: single (one-shot), every day, weekdays, weekends, or custom weekday selection."
+        },
+        "weekdays": {
+          "name": "Weekdays",
+          "description": "Which weekdays the schedule runs on. Only used when Repeat is set to 'custom'."
+        },
+        "enabled": {
+          "name": "Enabled",
+          "description": "Whether the schedule is active."
         }
       }
     }
@@ -170,14 +214,17 @@
       "remaining_minutes": {
         "name": "Charge remaining minutes"
       },
-      "booking_charge_state": {
-        "name": "Scheduled charging"
+      "charge_remaining_time": {
+        "name": "Charge remaining time"
       },
-      "booking_charging_hour": {
-        "name": "Scheduled charge hour"
+      "scheduled_charge_start_time": {
+        "name": "Scheduled charge start time"
       },
-      "booking_charging_minute": {
-        "name": "Scheduled charge minute"
+      "scheduled_charge_end_time": {
+        "name": "Scheduled charge end time"
+      },
+      "scheduled_charge_repeat": {
+        "name": "Scheduled charge repeat"
       },
       "total_power": {
         "name": "Total power"
@@ -424,6 +471,12 @@
       },
       "less_one_min": {
         "name": "Less one min"
+      },
+      "scheduled_charge_enabled": {
+        "name": "Scheduled charge enabled"
+      },
+      "scheduled_charge_until_full": {
+        "name": "Scheduled charge until full"
       }
     },
     "button": {

@@ -74,6 +74,11 @@ class BydSensorDescription(SensorEntityDescription):
     unit_fn: Callable[[Any], str | None] | None = None
     state_attrs_fn: Callable[[Any], dict[str, Any]] | None = None
     validator_fn: FieldValidator | None = None
+    available_fn: Callable[[Any], bool] | None = None
+    """Optional predicate against the source object to mark the entity
+    unavailable.  Returning ``False`` produces an HA "unavailable" state
+    even when the source object exists (e.g. for the schedule-end-time
+    sensor when the schedule is set to charge until full)."""
 
 
 def _round_int_attr(attr: str) -> Callable[[Any], int | None]:
@@ -145,6 +150,49 @@ def _attr_getter(name: str) -> Callable[[Any], Any]:
         return getattr(obj, name, None)
 
     return _get
+
+
+_WEEKDAY_LABELS: tuple[str, ...] = (
+    "Mon",
+    "Tue",
+    "Wed",
+    "Thu",
+    "Fri",
+    "Sat",
+    "Sun",
+)
+
+
+def _format_charge_way(value: str | None) -> str | None:
+    """Render the BYD ``chargeWay`` token as a human-readable repeat label.
+
+    * ``"s"`` → ``"Single"``
+    * ``"e"`` → ``"Every day"``
+    * ``"0,1,2,3,4"`` → ``"Weekdays"``
+    * ``"5,6"`` → ``"Weekends"``
+    * other comma-separated weekday indices → ``"Custom (Mon, Wed, Fri)"``
+
+    Falls back to the raw string for unparseable values so the sensor
+    surfaces the truth rather than swallowing unknown formats silently.
+    """
+    if value is None or not value:
+        return None
+    if value == "s":
+        return "Single"
+    if value == "e":
+        return "Every day"
+    if value == "0,1,2,3,4":
+        return "Weekdays"
+    if value == "5,6":
+        return "Weekends"
+    try:
+        indices = sorted({int(p.strip()) for p in value.split(",") if p.strip()})
+    except ValueError:
+        return value
+    names = [_WEEKDAY_LABELS[i] for i in indices if 0 <= i < len(_WEEKDAY_LABELS)]
+    if not names:
+        return value
+    return f"Custom ({', '.join(names)})"
 
 
 def _eq_consumption_value(snap: Any) -> Any:
@@ -451,25 +499,28 @@ SENSOR_DESCRIPTIONS: tuple[BydSensorDescription, ...] = (
         entity_registry_enabled_default=False,
         entity_category=EntityCategory.DIAGNOSTIC,
     ),
+    # Combined ``remaining_hours``/``remaining_minutes`` realtime fields,
+    # rendered as a single ``HH:MM`` string.  Only populates while
+    # actively charging — both source fields are ``-1`` (sentinel)
+    # otherwise, so the sensor stays unavailable instead of showing
+    # ``00:00``.  ``full_hour``/``full_minute`` always read ``-1`` even
+    # mid-charge per the active-charging capture, so they're unused.
     BydSensorDescription(
-        key="booking_charge_state",
+        key="charge_remaining_time",
         source="realtime",
-        icon="mdi:calendar-clock",
-        entity_registry_enabled_default=False,
-        entity_category=EntityCategory.DIAGNOSTIC,
-    ),
-    BydSensorDescription(
-        key="booking_charging_hour",
-        source="realtime",
-        icon="mdi:calendar-clock",
-        entity_registry_enabled_default=False,
-        entity_category=EntityCategory.DIAGNOSTIC,
-    ),
-    BydSensorDescription(
-        key="booking_charging_minute",
-        source="realtime",
-        icon="mdi:calendar-clock",
-        entity_registry_enabled_default=False,
+        available_fn=lambda obj: (
+            obj is not None
+            and getattr(obj, "remaining_hours", None) is not None
+            and getattr(obj, "remaining_minutes", None) is not None
+        ),
+        value_fn=lambda obj: (
+            f"{obj.remaining_hours:02d}:{obj.remaining_minutes:02d}"
+            if obj is not None
+            and obj.remaining_hours is not None
+            and obj.remaining_minutes is not None
+            else None
+        ),
+        icon="mdi:battery-clock",
         entity_category=EntityCategory.DIAGNOSTIC,
     ),
     BydSensorDescription(
@@ -898,6 +949,47 @@ SENSOR_DESCRIPTIONS: tuple[BydSensorDescription, ...] = (
         entity_registry_enabled_default=False,
         entity_category=EntityCategory.DIAGNOSTIC,
     ),
+    # --- Smart-charging schedule (sourced from /control/smartCharge/homePage) ---
+    BydSensorDescription(
+        key="scheduled_charge_start_time",
+        source="charging_schedule_charge",
+        value_fn=lambda obj: (
+            obj.start_time.strftime("%H:%M")
+            if obj is not None and obj.start_time is not None
+            else None
+        ),
+        icon="mdi:calendar-clock",
+        entity_registry_enabled_default=False,
+        entity_category=EntityCategory.DIAGNOSTIC,
+    ),
+    BydSensorDescription(
+        key="scheduled_charge_end_time",
+        source="charging_schedule_charge",
+        # ``charge_until_full`` flags the wire sentinel ``"full"`` —
+        # there's no clock-time end, so surface as unavailable rather
+        # than showing a misleading value.
+        available_fn=lambda obj: (
+            obj is not None and obj.end_time is not None and not obj.charge_until_full
+        ),
+        value_fn=lambda obj: (
+            obj.end_time.strftime("%H:%M")
+            if obj is not None and obj.end_time is not None
+            else None
+        ),
+        icon="mdi:calendar-clock",
+        entity_registry_enabled_default=False,
+        entity_category=EntityCategory.DIAGNOSTIC,
+    ),
+    BydSensorDescription(
+        key="scheduled_charge_repeat",
+        source="charging_schedule_charge",
+        value_fn=lambda obj: (
+            _format_charge_way(obj.charge_way) if obj is not None else None
+        ),
+        icon="mdi:calendar-refresh",
+        entity_registry_enabled_default=False,
+        entity_category=EntityCategory.DIAGNOSTIC,
+    ),
 )
 
 
@@ -1026,10 +1118,14 @@ class BydSensor(BydVehicleEntity, SensorEntity):
         """Return True when the coordinator has data for this source."""
         if self.entity_description.key in ("last_updated", "gps_last_updated"):
             return super().available and self._resolve_value() is not None
-        return (
-            super().available
-            and self._get_source_obj(self.entity_description.source) is not None
-        )
+        if not super().available:
+            return False
+        obj = self._get_source_obj(self.entity_description.source)
+        if obj is None:
+            return False
+        if self.entity_description.available_fn is not None:
+            return bool(self.entity_description.available_fn(obj))
+        return True
 
     @property
     def native_unit_of_measurement(self) -> str | None:

@@ -787,7 +787,13 @@ class BydDataUpdateCoordinator(DataUpdateCoordinator[VehicleSnapshot]):
             )
 
     async def async_fetch_charging(self) -> None:
-        """Service handler: fetch charging status and log the raw response."""
+        """Service handler: refresh charging state + schedule from one homePage call.
+
+        Hits ``/control/smartCharge/homePage`` once and updates both the
+        live charging snapshot section (also pushed via MQTT) and the
+        schedule section (HTTP-only).  Pushes the refreshed snapshot
+        out so dependent sensors update immediately.
+        """
         if self._car is None:
             return
         try:
@@ -797,6 +803,7 @@ class BydDataUpdateCoordinator(DataUpdateCoordinator[VehicleSnapshot]):
                 self._vin[-6:],
                 result,
             )
+            self.async_set_updated_data(self._car.state)
         except Exception as exc:  # noqa: BLE001
             _LOGGER.warning(
                 "Service fetch_charging failed: vin=%s, error=%s",
@@ -821,6 +828,72 @@ class BydDataUpdateCoordinator(DataUpdateCoordinator[VehicleSnapshot]):
                 self._vin,
                 exc,
             )
+
+    async def async_save_charging_schedule(
+        self,
+        *,
+        start_charge_time: str,
+        end_charge_time: str,
+        charge_way: str,
+        enabled: bool = True,
+    ) -> None:
+        """Push a new smart-charging schedule and refresh the snapshot.
+
+        Wire format follows the captured ``saveOrUpdate`` request:
+        ``startChargeTime`` / ``endChargeTime`` are ``"HH:MM"`` strings
+        (or the ``"full"`` sentinel on end), ``chargeWay`` selects the
+        repeat (``"s"`` / ``"e"`` / comma-separated weekday indices),
+        ``status`` is the enabled flag.
+        """
+        if self._car is None:
+            raise HomeAssistantError(
+                f"BYD vehicle {self._vin[-6:]} not ready for charging commands"
+            )
+        try:
+            await self._car.save_charging_schedule(
+                start_charge_time=start_charge_time,
+                end_charge_time=end_charge_time,
+                charge_way=charge_way,
+                enabled=enabled,
+            )
+        except BydEndpointNotSupportedError as exc:
+            raise HomeAssistantError(
+                "save_charging_schedule not supported for this vehicle/region"
+            ) from exc
+        except BydDataUnavailableError as exc:
+            # BYD code 6002: cloud accepted the request but couldn't
+            # reach the vehicle (weak cellular signal, parked in a
+            # garage, etc.).  Recoverable — surface a friendlier
+            # message than the raw "endpoint failed: code=6002 …".
+            raise HomeAssistantError(
+                "Vehicle has a weak network signal — try again when "
+                "it's back in coverage"
+            ) from exc
+        except BydRemoteControlError as exc:
+            raise HomeAssistantError(
+                f"save_charging_schedule failed to settle: {exc}"
+            ) from exc
+        except BydAuthenticationError as exc:
+            raise HomeAssistantError(
+                f"save_charging_schedule failed (auth): {exc}"
+            ) from exc
+        except (BydApiError, BydTransportError) as exc:
+            raise HomeAssistantError(f"save_charging_schedule failed: {exc}") from exc
+
+        _LOGGER.info(
+            "save_charging_schedule accepted: vin=%s, "
+            "start=%s end=%s charge_way=%s enabled=%s",
+            self._vin[-6:],
+            start_charge_time,
+            end_charge_time,
+            charge_way,
+            enabled,
+        )
+        # ``car.save_charging_schedule`` polls ``changeResult`` until
+        # the cloud reports a terminal state and then refreshes the
+        # snapshot via ``update_charging`` — push the new snapshot out
+        # to subscribers so dependent sensors update immediately.
+        self.async_set_updated_data(self._car.state)
 
     async def async_start_charging(self) -> None:
         """Start charging immediately and refresh charging state on success.

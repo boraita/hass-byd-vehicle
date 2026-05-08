@@ -419,6 +419,25 @@ BINARY_SENSOR_DESCRIPTIONS: tuple[BydBinarySensorDescription, ...] = (
         entity_category=EntityCategory.DIAGNOSTIC,
         value_fn=_attr_truthy("less_one_min"),
     ),
+    # ====================================
+    # Smart-charging schedule
+    # ====================================
+    BydBinarySensorDescription(
+        key="scheduled_charge_enabled",
+        source="charging_schedule_charge",
+        icon="mdi:calendar-check",
+        entity_registry_enabled_default=False,
+        entity_category=EntityCategory.DIAGNOSTIC,
+        value_fn=_attr_truthy("status"),
+    ),
+    BydBinarySensorDescription(
+        key="scheduled_charge_until_full",
+        source="charging_schedule_charge",
+        icon="mdi:battery-charging-100",
+        entity_registry_enabled_default=False,
+        entity_category=EntityCategory.DIAGNOSTIC,
+        value_fn=_attr_truthy("charge_until_full"),
+    ),
 )
 
 
