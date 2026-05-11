@@ -293,24 +293,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 exc,
             )
 
-    # One-shot charging fetch so the homePage-backed sensors are
-    # populated at startup. Pulls live state AND schedule from one
-    # /control/smartCharge/homePage call — MQTT updates the live state
-    # afterwards, but the schedule is HTTP-only so without this the
-    # schedule sensors stay unavailable until the user presses the
-    # ``Fetch charging`` button.
-    _LOGGER.debug("Running initial charging fetch for BYD coordinators")
-    for vin, coordinator in coordinators.items():
-        try:
-            await coordinator.async_fetch_charging()
-        except Exception as exc:  # noqa: BLE001
-            _LOGGER.debug(
-                "Initial charging fetch failed "
-                "(will populate on next press): vin=%s error=%s",
-                vin,
-                exc,
-            )
-
     hass.data[DOMAIN][entry.entry_id] = {
         "api": api,
         "coordinators": coordinators,

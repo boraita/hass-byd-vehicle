@@ -96,9 +96,8 @@ class BydVehicleEntity(CoordinatorEntity[BydDataUpdateCoordinator]):
         Supported values: ``"realtime"``, ``"hvac"``, ``"gps"``,
         ``"energy"``, ``"energy_cumulative"``, ``"energy_nearest"``,
         ``"energy_self_graph"``, ``"energy_auto_model_graph"``,
-        ``"charging_schedule"``, ``"charging_schedule_charge"``,
-        ``"charging_schedule_journey"``, ``"snapshot"`` (the full
-        :class:`VehicleSnapshot` for cross-section merged value_fn lookups).
+        ``"snapshot"`` (the full :class:`VehicleSnapshot` for cross-section
+        merged value_fn lookups).
         """
         if source == "realtime":
             return self._get_realtime()
@@ -123,15 +122,6 @@ class BydVehicleEntity(CoordinatorEntity[BydDataUpdateCoordinator]):
                 "auto_model_graph": "auto_model_graph",
             }
             return getattr(energy, attr_map.get(attr, attr), None)
-        if source.startswith("charging_schedule"):
-            snap = self._snapshot()
-            schedule = snap.charging_schedule if snap is not None else None
-            if source == "charging_schedule":
-                return schedule
-            if schedule is None:
-                return None
-            attr = source[len("charging_schedule_") :]
-            return getattr(schedule, attr, None)
         return None
 
     def _is_vehicle_on(self) -> bool:
