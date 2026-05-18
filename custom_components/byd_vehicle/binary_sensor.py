@@ -196,6 +196,7 @@ BINARY_SENSOR_DESCRIPTIONS: tuple[BydBinarySensorDescription, ...] = (
     # ``None`` so the entity reports unknown rather than a stale value.
     BydBinarySensorDescription(
         key="left_front_door_lock",
+        name="Front left door lock",
         source="realtime",
         device_class=BinarySensorDeviceClass.LOCK,
         value_fn=lambda r: (
@@ -208,6 +209,7 @@ BINARY_SENSOR_DESCRIPTIONS: tuple[BydBinarySensorDescription, ...] = (
     ),
     BydBinarySensorDescription(
         key="right_front_door_lock",
+        name="Front right door lock",
         source="realtime",
         device_class=BinarySensorDeviceClass.LOCK,
         value_fn=lambda r: (
@@ -220,6 +222,7 @@ BINARY_SENSOR_DESCRIPTIONS: tuple[BydBinarySensorDescription, ...] = (
     ),
     BydBinarySensorDescription(
         key="left_rear_door_lock",
+        name="Rear left door lock",
         source="realtime",
         device_class=BinarySensorDeviceClass.LOCK,
         value_fn=lambda r: (
@@ -232,6 +235,7 @@ BINARY_SENSOR_DESCRIPTIONS: tuple[BydBinarySensorDescription, ...] = (
     ),
     BydBinarySensorDescription(
         key="right_rear_door_lock",
+        name="Rear right door lock",
         source="realtime",
         device_class=BinarySensorDeviceClass.LOCK,
         value_fn=lambda r: (
@@ -244,6 +248,7 @@ BINARY_SENSOR_DESCRIPTIONS: tuple[BydBinarySensorDescription, ...] = (
     ),
     BydBinarySensorDescription(
         key="sliding_door_lock",
+        name="Sliding door lock",
         source="realtime",
         device_class=BinarySensorDeviceClass.LOCK,
         value_fn=lambda r: (
@@ -453,14 +458,9 @@ BINARY_SENSOR_DESCRIPTIONS: tuple[BydBinarySensorDescription, ...] = (
     # ====================================
     # Additional warnings (disabled)
     # ====================================
-    BydBinarySensorDescription(
-        key="oil_pressure_system",
-        source="realtime",
-        icon="mdi:oil",
-        entity_registry_enabled_default=False,
-        entity_category=EntityCategory.DIAGNOSTIC,
-        value_fn=_sentinel_int_on("oil_pressure_system"),
-    ),
+    # NOTE: ``oil_pressure_system`` is irrelevant on BEV trims (no engine,
+    # no oil pressure).  Raw field is always ``0`` on Sealion 7 EU.
+    # Descriptor omitted; orphan cleanup handles legacy entries.
     BydBinarySensorDescription(
         key="braking_system",
         source="realtime",
@@ -532,6 +532,9 @@ _LEGACY_BINARY_SENSOR_UNIQUE_ID_REMOVALS: frozenset[str] = frozenset(
         # with actual preconditioning activity.  Was reporting "on" 24/7
         # while online.  Descriptor removed.
         "realtime_charge_heat_state",
+        # ``oil_pressure_system`` is irrelevant on BEV (no engine).
+        # Raw field is always ``0`` on Sealion 7 EU.
+        "realtime_oil_pressure_system",
     }
 )
 

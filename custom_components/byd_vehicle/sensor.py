@@ -490,13 +490,13 @@ SENSOR_DESCRIPTIONS: tuple[BydSensorDescription, ...] = (
         entity_registry_enabled_default=False,
         entity_category=EntityCategory.DIAGNOSTIC,
     ),
-    BydSensorDescription(
-        key="charge_state",
-        source="realtime",
-        icon="mdi:ev-station",
-        entity_registry_enabled_default=False,
-        entity_category=EntityCategory.DIAGNOSTIC,
-    ),
+    # NOTE: ``charge_state`` (from ``realtime``) and ``charging_state`` (from
+    # the smart-charging endpoint) report the same numeric value on most
+    # VINs, which makes them look duplicated in the UI.  We keep
+    # ``charging_state`` as the authoritative source (it's reliable on
+    # Sealion 7 EU, see PR_PLAN.md) and drop the ``realtime`` variant.
+    # Legacy registry entry cleaned up via
+    # ``_LEGACY_SENSOR_UNIQUE_ID_REMOVALS`` below.
     BydSensorDescription(
         key="wait_status",
         source="realtime",
@@ -567,13 +567,10 @@ SENSOR_DESCRIPTIONS: tuple[BydSensorDescription, ...] = (
         icon="mdi:battery-clock",
         entity_category=EntityCategory.DIAGNOSTIC,
     ),
-    BydSensorDescription(
-        key="total_power",
-        source="realtime",
-        icon="mdi:flash",
-        entity_registry_enabled_default=False,
-        entity_category=EntityCategory.DIAGNOSTIC,
-    ),
+    # NOTE: ``total_power`` is reported as ``0.0`` permanently on Sealion 7
+    # EU — the BYD cloud does not populate this field for this VIN.  The
+    # useful instantaneous-power sensor is ``battery_power`` (reads
+    # ``realtime.gl`` instead).  Descriptor omitted; orphan cleanup.
     BydSensorDescription(
         key="nearest_energy_consumption",
         source="realtime",
@@ -1060,6 +1057,14 @@ _LEGACY_SENSOR_UNIQUE_ID_REMOVALS: frozenset[str] = frozenset(
         # field is redundant with other entities).
         "realtime_power_gear",
         "realtime_booking_charge_state",
+        # Redundant with ``charging.charging_state`` (the authoritative
+        # source on Sealion 7 EU — see PR_PLAN.md).  The realtime variant
+        # reports the same number, just sourced from a less reliable field.
+        "realtime_charge_state",
+        # ``total_power`` raw field is permanently ``0.0`` on Sealion 7 EU;
+        # use ``battery_power`` (reads ``gl``) for the real instantaneous
+        # power instead.
+        "realtime_total_power",
     }
 )
 

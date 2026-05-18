@@ -9,6 +9,7 @@ from typing import Any
 from homeassistant.components.select import SelectEntity, SelectEntityDescription
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from pybyd._capabilities.seat import SeatLevel, SeatPosition
 from pybyd.models.realtime import SeatHeatVentState
@@ -136,49 +137,26 @@ SEAT_CLIMATE_DESCRIPTIONS: tuple[BydSeatClimateDescription, ...] = (
         capability_key=None,
         entity_registry_enabled_default=False,
     ),
-    # Third-row seats (only present on Sealion 7 / 6-7 seater trims).
-    # Same caveat as rear seats: read-only until pyBYD adds the position.
-    # ``name=`` is explicit because no translation exists in en.json yet.
-    BydSeatClimateDescription(
-        key="third_left_seat_heat",
-        name="Third left seat heating",
-        icon="mdi:car-seat-heater",
-        seat_position=None,
-        mode="heat",
-        hvac_attr="lr_third_heat_state",
-        capability_key=None,
-        entity_registry_enabled_default=False,
-    ),
-    BydSeatClimateDescription(
-        key="third_left_seat_ventilation",
-        name="Third left seat ventilation",
-        icon="mdi:car-seat-cooler",
-        seat_position=None,
-        mode="vent",
-        hvac_attr="lr_third_ventilation_state",
-        capability_key=None,
-        entity_registry_enabled_default=False,
-    ),
-    BydSeatClimateDescription(
-        key="third_right_seat_heat",
-        name="Third right seat heating",
-        icon="mdi:car-seat-heater",
-        seat_position=None,
-        mode="heat",
-        hvac_attr="rr_third_heat_state",
-        capability_key=None,
-        entity_registry_enabled_default=False,
-    ),
-    BydSeatClimateDescription(
-        key="third_right_seat_ventilation",
-        name="Third right seat ventilation",
-        icon="mdi:car-seat-cooler",
-        seat_position=None,
-        mode="vent",
-        hvac_attr="rr_third_ventilation_state",
-        capability_key=None,
-        entity_registry_enabled_default=False,
-    ),
+    # NOTE: third-row seats (``lr_third_*``/``rr_third_*`` in realtime) only
+    # exist on the 6/7-seater Sealion 7 trim, not on the EU 5-seater
+    # Comfort.  Until we have a reliable capability signal to detect the
+    # trim (``function_nos`` does not contain a clear "third row" code),
+    # we omit these descriptors to avoid cluttering 5-seater installs.
+    # 5-seater orphan entries are cleaned up via
+    # ``_LEGACY_SELECT_UNIQUE_ID_REMOVALS`` below.
+)
+
+# Selects whose unique-id suffix is removed from the registry on setup —
+# entries that the integration created in earlier versions but no longer
+# manages.  Currently: the four third-row seat entries (only meaningful on
+# 6/7-seater Sealion 7 trims, which we do not yet detect).
+_LEGACY_SELECT_UNIQUE_ID_REMOVALS: frozenset[str] = frozenset(
+    {
+        "select_third_left_seat_heat",
+        "select_third_left_seat_ventilation",
+        "select_third_right_seat_heat",
+        "select_third_right_seat_ventilation",
+    }
 )
 
 
@@ -190,6 +168,13 @@ async def async_setup_entry(
     """Set up BYD seat climate select entities from a config entry."""
     data = hass.data[DOMAIN][entry.entry_id]
     coordinators: dict[str, BydDataUpdateCoordinator] = data["coordinators"]
+
+    registry = er.async_get(hass)
+    for vin in coordinators:
+        for suffix in _LEGACY_SELECT_UNIQUE_ID_REMOVALS:
+            stale = registry.async_get_entity_id("select", DOMAIN, f"{vin}_{suffix}")
+            if stale:
+                registry.async_remove(stale)
 
     entities: list[SelectEntity] = []
     for vin, coordinator in coordinators.items():
