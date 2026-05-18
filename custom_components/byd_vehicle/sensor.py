@@ -553,17 +553,16 @@ SENSOR_DESCRIPTIONS: tuple[BydSensorDescription, ...] = (
     BydSensorDescription(
         key="charge_remaining_time",
         source="realtime",
-        available_fn=lambda obj: (
-            obj is not None
-            and getattr(obj, "remaining_hours", None) is not None
-            and getattr(obj, "remaining_minutes", None) is not None
-        ),
+        # No ``available_fn``: report ``"00:00"`` when not charging so the
+        # sensor stays in a meaningful state instead of jumping to
+        # ``unavailable``.  ``remaining_hours``/``remaining_minutes`` are
+        # ``-1`` (normalised to ``None``) when no charge session is active.
         value_fn=lambda obj: (
             f"{obj.remaining_hours:02d}:{obj.remaining_minutes:02d}"
             if obj is not None
             and obj.remaining_hours is not None
             and obj.remaining_minutes is not None
-            else None
+            else "00:00"
         ),
         icon="mdi:battery-clock",
         entity_category=EntityCategory.DIAGNOSTIC,

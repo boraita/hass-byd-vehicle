@@ -136,6 +136,49 @@ SEAT_CLIMATE_DESCRIPTIONS: tuple[BydSeatClimateDescription, ...] = (
         capability_key=None,
         entity_registry_enabled_default=False,
     ),
+    # Third-row seats (only present on Sealion 7 / 6-7 seater trims).
+    # Same caveat as rear seats: read-only until pyBYD adds the position.
+    # ``name=`` is explicit because no translation exists in en.json yet.
+    BydSeatClimateDescription(
+        key="third_left_seat_heat",
+        name="Third left seat heating",
+        icon="mdi:car-seat-heater",
+        seat_position=None,
+        mode="heat",
+        hvac_attr="lr_third_heat_state",
+        capability_key=None,
+        entity_registry_enabled_default=False,
+    ),
+    BydSeatClimateDescription(
+        key="third_left_seat_ventilation",
+        name="Third left seat ventilation",
+        icon="mdi:car-seat-cooler",
+        seat_position=None,
+        mode="vent",
+        hvac_attr="lr_third_ventilation_state",
+        capability_key=None,
+        entity_registry_enabled_default=False,
+    ),
+    BydSeatClimateDescription(
+        key="third_right_seat_heat",
+        name="Third right seat heating",
+        icon="mdi:car-seat-heater",
+        seat_position=None,
+        mode="heat",
+        hvac_attr="rr_third_heat_state",
+        capability_key=None,
+        entity_registry_enabled_default=False,
+    ),
+    BydSeatClimateDescription(
+        key="third_right_seat_ventilation",
+        name="Third right seat ventilation",
+        icon="mdi:car-seat-cooler",
+        seat_position=None,
+        mode="vent",
+        hvac_attr="rr_third_ventilation_state",
+        capability_key=None,
+        entity_registry_enabled_default=False,
+    ),
 )
 
 
@@ -153,7 +196,14 @@ async def async_setup_entry(
         vehicle = coordinator.vehicle
         for description in SEAT_CLIMATE_DESCRIPTIONS:
             capability_key = description.capability_key
-            if capability_key is None or not coordinator.capability_available(
+            # Capability-gated entities (driver/copilot front seats) only
+            # get created when the vehicle actually advertises them.  Rear
+            # seat entities (``capability_key=None``) are always created
+            # but stay disabled-by-default — the read side surfaces the
+            # state from ``lr_*``/``rr_*`` fields when the feature exists;
+            # commands warn-and-no-op until pyBYD's SeatCapability adds
+            # rear positions.
+            if capability_key is not None and not coordinator.capability_available(
                 capability_key
             ):
                 continue

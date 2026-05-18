@@ -18,6 +18,7 @@ from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from pybyd.models.realtime import (
     DoorOpenState,
+    LockState,
     WindowState,
 )
 from pybyd.models.vehicle import Vehicle
@@ -187,6 +188,73 @@ BINARY_SENSOR_DESCRIPTIONS: tuple[BydBinarySensorDescription, ...] = (
         entity_registry_enabled_default=False,
     ),
     # ====================================
+    # Individual door locks (disabled)
+    # ====================================
+    # For ``BinarySensorDeviceClass.LOCK`` the convention is
+    # ``is_on=True`` = "problem state" = unlocked.  ``UNAVAILABLE`` (0)
+    # in the realtime payload happens during sleeping responses; map to
+    # ``None`` so the entity reports unknown rather than a stale value.
+    BydBinarySensorDescription(
+        key="left_front_door_lock",
+        source="realtime",
+        device_class=BinarySensorDeviceClass.LOCK,
+        value_fn=lambda r: (
+            None
+            if (v := getattr(r, "left_front_door_lock", None))
+            in (None, LockState.UNKNOWN, LockState.UNAVAILABLE)
+            else v != LockState.LOCKED
+        ),
+        entity_registry_enabled_default=False,
+    ),
+    BydBinarySensorDescription(
+        key="right_front_door_lock",
+        source="realtime",
+        device_class=BinarySensorDeviceClass.LOCK,
+        value_fn=lambda r: (
+            None
+            if (v := getattr(r, "right_front_door_lock", None))
+            in (None, LockState.UNKNOWN, LockState.UNAVAILABLE)
+            else v != LockState.LOCKED
+        ),
+        entity_registry_enabled_default=False,
+    ),
+    BydBinarySensorDescription(
+        key="left_rear_door_lock",
+        source="realtime",
+        device_class=BinarySensorDeviceClass.LOCK,
+        value_fn=lambda r: (
+            None
+            if (v := getattr(r, "left_rear_door_lock", None))
+            in (None, LockState.UNKNOWN, LockState.UNAVAILABLE)
+            else v != LockState.LOCKED
+        ),
+        entity_registry_enabled_default=False,
+    ),
+    BydBinarySensorDescription(
+        key="right_rear_door_lock",
+        source="realtime",
+        device_class=BinarySensorDeviceClass.LOCK,
+        value_fn=lambda r: (
+            None
+            if (v := getattr(r, "right_rear_door_lock", None))
+            in (None, LockState.UNKNOWN, LockState.UNAVAILABLE)
+            else v != LockState.LOCKED
+        ),
+        entity_registry_enabled_default=False,
+    ),
+    BydBinarySensorDescription(
+        key="sliding_door_lock",
+        source="realtime",
+        device_class=BinarySensorDeviceClass.LOCK,
+        value_fn=lambda r: (
+            None
+            if (v := getattr(r, "sliding_door_lock", None))
+            in (None, LockState.UNKNOWN, LockState.UNAVAILABLE)
+            else v != LockState.LOCKED
+        ),
+        entity_registry_enabled_default=False,
+    ),
+    # ====================================
     # Individual windows (disabled)
     # ====================================
     BydBinarySensorDescription(
@@ -283,15 +351,12 @@ BINARY_SENSOR_DESCRIPTIONS: tuple[BydBinarySensorDescription, ...] = (
         entity_category=EntityCategory.DIAGNOSTIC,
         value_fn=_sentinel_int_on("esp"),
     ),
-    BydBinarySensorDescription(
-        key="pwr",
-        source="realtime",
-        device_class=BinarySensorDeviceClass.PROBLEM,
-        icon="mdi:flash-alert",
-        entity_registry_enabled_default=False,
-        entity_category=EntityCategory.DIAGNOSTIC,
-        value_fn=_sentinel_int_on("pwr"),
-    ),
+    # NOTE: ``pwr`` is observed at value ``2`` while the car is online
+    # ("READY" state) and ``0`` when sleeping — it does not behave as a
+    # warning indicator.  Mapping it via ``device_class=PROBLEM`` was
+    # producing a permanent "problem" flag on Sealion 7 EU.  The
+    # descriptor is intentionally omitted; the legacy registry entry is
+    # cleaned up in ``_LEGACY_BINARY_SENSOR_UNIQUE_ID_REMOVALS`` below.
     BydBinarySensorDescription(
         key="power_system",
         source="realtime",
@@ -372,14 +437,11 @@ BINARY_SENSOR_DESCRIPTIONS: tuple[BydBinarySensorDescription, ...] = (
         entity_category=EntityCategory.DIAGNOSTIC,
         value_fn=_sentinel_int_on("upgrade_status"),
     ),
-    BydBinarySensorDescription(
-        key="charge_heat_state",
-        source="realtime",
-        icon="mdi:heat-wave",
-        entity_registry_enabled_default=False,
-        entity_category=EntityCategory.DIAGNOSTIC,
-        value_fn=_attr_truthy("charge_heat_state"),
-    ),
+    # NOTE: ``charge_heat_state`` was previously exposed via ``_attr_truthy``
+    # but observation shows it cycles between ``0`` (sleeping responses) and
+    # ``2`` (any awake response), independent of whether charge preconditioning
+    # is actually active.  Exposing it as a problem/active indicator was
+    # misleading.  Descriptor removed; legacy entry cleaned up below.
     BydBinarySensorDescription(
         key="vehicle_state",
         source="realtime",
@@ -460,6 +522,19 @@ _BINARY_SENSOR_UNIQUE_ID_MIGRATIONS: dict[str, str] = {
     "realtime_is_charger_connected": "charging_is_charger_connected",
 }
 
+_LEGACY_BINARY_SENSOR_UNIQUE_ID_REMOVALS: frozenset[str] = frozenset(
+    {
+        # ``pwr`` reports the EV "READY" status (2=ready, 0=sleeping), not a
+        # warning — the previous ``device_class=PROBLEM`` mapping made it
+        # permanently "on".  The descriptor is removed; drop the orphan.
+        "realtime_pwr",
+        # ``charge_heat_state`` cycles 0/2 with awake/sleep payloads, not
+        # with actual preconditioning activity.  Was reporting "on" 24/7
+        # while online.  Descriptor removed.
+        "realtime_charge_heat_state",
+    }
+)
+
 
 async def async_setup_entry(
     hass: HomeAssistant,
@@ -484,6 +559,14 @@ async def async_setup_entry(
                     "binary_sensor", DOMAIN, new_uid
                 ):
                     registry.async_update_entity(existing, new_unique_id=new_uid)
+
+    for vin in coordinators:
+        for suffix in _LEGACY_BINARY_SENSOR_UNIQUE_ID_REMOVALS:
+            stale = registry.async_get_entity_id(
+                "binary_sensor", DOMAIN, f"{vin}_{suffix}"
+            )
+            if stale:
+                registry.async_remove(stale)
 
     # Reverse the legacy first-fetch auto-disable: entries flagged
     # ``disabled_by=integration`` by older versions should come back on now
