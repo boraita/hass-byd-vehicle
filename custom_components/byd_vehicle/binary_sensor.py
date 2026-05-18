@@ -14,6 +14,7 @@ from homeassistant.components.binary_sensor import (
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import EntityCategory
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from pybyd.models.realtime import (
     DoorOpenState,
@@ -95,6 +96,17 @@ BINARY_SENSOR_DESCRIPTIONS: tuple[BydBinarySensorDescription, ...] = (
         source="realtime",
         device_class=BinarySensorDeviceClass.BATTERY_CHARGING,
         value_fn=_is_charging_from_realtime,
+    ),
+    # Plug / charger physically connected.  Reads from the smart-charging
+    # endpoint (``charging.connect_state``) because the realtime payload
+    # reports ``connectState=-1`` permanently on several VINs and the
+    # ``realtime.is_charger_connected`` heuristic over ``charge_state`` is
+    # ambiguous on Sealion 7 (value ``15`` appears unplugged too).
+    BydBinarySensorDescription(
+        key="is_charger_connected",
+        source="charging",
+        device_class=BinarySensorDeviceClass.PLUG,
+        value_fn=lambda c: c.is_connected if c is not None else None,
     ),
     BydBinarySensorDescription(
         key="is_any_door_open",
@@ -441,6 +453,14 @@ BINARY_SENSOR_DESCRIPTIONS: tuple[BydBinarySensorDescription, ...] = (
 )
 
 
+_BINARY_SENSOR_UNIQUE_ID_MIGRATIONS: dict[str, str] = {
+    # Old descriptors read from ``realtime``; we now source them from the
+    # smart-charging endpoint.  Map the legacy unique-id suffix to the new one
+    # so users keep their existing entity_id, history and dashboards.
+    "realtime_is_charger_connected": "charging_is_charger_connected",
+}
+
+
 async def async_setup_entry(
     hass: HomeAssistant,
     entry: ConfigEntry,
@@ -449,6 +469,37 @@ async def async_setup_entry(
     """Set up BYD binary sensors from a config entry."""
     data = hass.data[DOMAIN][entry.entry_id]
     coordinators: dict[str, BydDataUpdateCoordinator] = data["coordinators"]
+
+    registry = er.async_get(hass)
+
+    if _BINARY_SENSOR_UNIQUE_ID_MIGRATIONS:
+        for vin in coordinators:
+            for old_suffix, new_suffix in _BINARY_SENSOR_UNIQUE_ID_MIGRATIONS.items():
+                old_uid = f"{vin}_{old_suffix}"
+                new_uid = f"{vin}_{new_suffix}"
+                existing = registry.async_get_entity_id(
+                    "binary_sensor", DOMAIN, old_uid
+                )
+                if existing and not registry.async_get_entity_id(
+                    "binary_sensor", DOMAIN, new_uid
+                ):
+                    registry.async_update_entity(existing, new_unique_id=new_uid)
+
+    # Reverse the legacy first-fetch auto-disable: entries flagged
+    # ``disabled_by=integration`` by older versions should come back on now
+    # that the value_fn handles ``0`` correctly.
+    for vin in coordinators:
+        for description in BINARY_SENSOR_DESCRIPTIONS:
+            uid = f"{vin}_{description.source}_{description.key}"
+            entity_id = registry.async_get_entity_id("binary_sensor", DOMAIN, uid)
+            if entity_id is None:
+                continue
+            entry_obj = registry.async_get(entity_id)
+            if (
+                entry_obj
+                and entry_obj.disabled_by == er.RegistryEntryDisabler.INTEGRATION
+            ):
+                registry.async_update_entity(entity_id, disabled_by=None)
 
     entities: list[BinarySensorEntity] = []
     for vin, coordinator in coordinators.items():
@@ -480,11 +531,6 @@ class BydBinarySensor(BydVehicleEntity, BinarySensorEntity):
         self._vehicle = vehicle
         self._attr_unique_id = f"{vin}_{description.source}_{description.key}"
         self._last_is_on: bool | None = None
-
-        # Auto-disable binary sensors that return no data on first fetch.
-        if description.entity_registry_enabled_default is not False:
-            if self._resolve_value() is None:
-                self._attr_entity_registry_enabled_default = False
 
     # ------------------------------------------------------------------
     # Helpers

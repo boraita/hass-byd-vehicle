@@ -26,6 +26,7 @@ from homeassistant.const import (
     UnitOfTime,
 )
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from pybyd.models.realtime import TirePressureUnit
 from pybyd.models.vehicle import EnergyType, Vehicle
@@ -464,11 +465,28 @@ SENSOR_DESCRIPTIONS: tuple[BydSensorDescription, ...] = (
         entity_category=EntityCategory.DIAGNOSTIC,
         value_fn=_round_int_attr("total_mileage_v2"),
     ),
-    # Charging detail from realtime
+    # Charging detail from the smart-charging endpoint.  The ``realtime``
+    # payload reports ``chargingState=-1`` permanently on several VINs
+    # (notably Sealion 7 EU), so we read the authoritative value from
+    # ``/control/smartCharge/homePage`` instead.
     BydSensorDescription(
         key="charging_state",
-        source="realtime",
+        source="charging",
         icon="mdi:ev-station",
+        entity_registry_enabled_default=False,
+        entity_category=EntityCategory.DIAGNOSTIC,
+    ),
+    # T-Box version (from vehicle metadata, refreshable via the
+    # ``byd_vehicle.refresh_firmware_metadata`` service).  Exposed as a
+    # diagnostic sensor so automations can trigger on its change.  The
+    # cloud also fires the :event:`byd_vehicle_firmware_changed` HA event
+    # on transition.
+    BydSensorDescription(
+        key="tbox_version",
+        name="T-Box version",
+        source="vehicle",
+        attr_key="tbox_version",
+        icon="mdi:chip",
         entity_registry_enabled_default=False,
         entity_category=EntityCategory.DIAGNOSTIC,
     ),
@@ -1020,6 +1038,33 @@ SENSOR_DESCRIPTIONS: tuple[BydSensorDescription, ...] = (
 )
 
 
+_SENSOR_UNIQUE_ID_MIGRATIONS: dict[str, str] = {
+    # Sensors that previously read from ``realtime`` and now source their
+    # value from the smart-charging endpoint.  Map legacy suffixes to the new
+    # ones so existing users keep their entity_id, history and dashboards.
+    "realtime_charging_state": "charging_charging_state",
+}
+
+_LEGACY_SENSOR_UNIQUE_ID_REMOVALS: frozenset[str] = frozenset(
+    {
+        # Sensors whose descriptor was retired in favour of a binary_sensor
+        # counterpart that uses the proper device class (problem, plug, …).
+        # The entries linger in registry from older versions and only show
+        # ``unavailable`` — drop them at setup so the UI stays clean.
+        "realtime_left_front_tire_status",
+        "realtime_right_front_tire_status",
+        "realtime_left_rear_tire_status",
+        "realtime_right_rear_tire_status",
+        "realtime_tirepressure_system",
+        "realtime_power_system",
+        # Descriptors that no longer exist in any platform (their realtime
+        # field is redundant with other entities).
+        "realtime_power_gear",
+        "realtime_booking_charge_state",
+    }
+)
+
+
 async def async_setup_entry(
     hass: HomeAssistant,
     entry: ConfigEntry,
@@ -1030,9 +1075,29 @@ async def async_setup_entry(
     coordinators: dict[str, BydDataUpdateCoordinator] = data["coordinators"]
     gps_coordinators = data.get("gps_coordinators", {})
 
+    registry = er.async_get(hass)
+
+    if _SENSOR_UNIQUE_ID_MIGRATIONS:
+        for vin in coordinators:
+            for old_suffix, new_suffix in _SENSOR_UNIQUE_ID_MIGRATIONS.items():
+                old_uid = f"{vin}_{old_suffix}"
+                new_uid = f"{vin}_{new_suffix}"
+                existing = registry.async_get_entity_id("sensor", DOMAIN, old_uid)
+                if existing and not registry.async_get_entity_id(
+                    "sensor", DOMAIN, new_uid
+                ):
+                    registry.async_update_entity(existing, new_unique_id=new_uid)
+
+    for vin in coordinators:
+        for suffix in _LEGACY_SENSOR_UNIQUE_ID_REMOVALS:
+            stale = registry.async_get_entity_id("sensor", DOMAIN, f"{vin}_{suffix}")
+            if stale:
+                registry.async_remove(stale)
+
     entities: list[SensorEntity] = []
     for vin, coordinator in coordinators.items():
         vehicle = coordinator.vehicle
+        distribution_supported = coordinator.energy_distribution_supported
         for description in SENSOR_DESCRIPTIONS:
             if description.key == "gps_last_updated":
                 gps_coordinator = gps_coordinators.get(vin)
@@ -1040,6 +1105,20 @@ async def async_setup_entry(
                     entities.append(
                         BydSensor(gps_coordinator, vin, vehicle, description)
                     )
+                continue
+            # Skip per-leg distribution sensors on VINs where the cloud
+            # leaves the four ``*Distribution`` fields fixed at ``"--"`` —
+            # they would always report ``unknown`` and only clutter the UI.
+            if (
+                distribution_supported is False
+                and description.source == "energy_nearest"
+                and description.attr_key
+                and description.attr_key.endswith("_distribution")
+            ):
+                stale_uid = f"{vin}_{description.source}_{description.key}"
+                stale = registry.async_get_entity_id("sensor", DOMAIN, stale_uid)
+                if stale:
+                    registry.async_remove(stale)
                 continue
             entities.append(BydSensor(coordinator, vin, vehicle, description))
 

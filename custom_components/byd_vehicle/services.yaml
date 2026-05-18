@@ -105,3 +105,11 @@ save_charging_schedule:
       default: true
       selector:
         boolean:
+
+refresh_firmware_metadata:
+  fields:
+    device_id:
+      required: true
+      selector:
+        device:
+          integration: byd_vehicle

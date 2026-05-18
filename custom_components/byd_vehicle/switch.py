@@ -7,6 +7,7 @@ from typing import Any
 from homeassistant.components.switch import SwitchEntity
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.entity import EntityCategory
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.restore_state import RestoreEntity
@@ -15,6 +16,16 @@ from pybyd.models.vehicle import Vehicle
 from .const import DOMAIN
 from .coordinator import BydDataUpdateCoordinator
 from .entity import BydActionEntity, BydVehicleEntity
+
+_CAPABILITY_GATED_SUFFIXES: dict[str, str] = {
+    # Switches that only exist when the vehicle reports the matching
+    # capability.  Older versions of the integration left these entries
+    # in the registry even when the VIN no longer supports the capability,
+    # showing up as permanently ``unavailable`` switches in the UI.
+    "car_on": "switch_car_on",
+    "battery_heat": "switch_battery_heat",
+    "steering_wheel_heat": "switch_steering_wheel_heat",
+}
 
 
 async def async_setup_entry(
@@ -27,6 +38,8 @@ async def async_setup_entry(
     coordinators: dict[str, BydDataUpdateCoordinator] = data["coordinators"]
     gps_coordinators = data.get("gps_coordinators", {})
 
+    registry = er.async_get(hass)
+
     entities: list[SwitchEntity] = []
     for vin, coordinator in coordinators.items():
         gps_coordinator = gps_coordinators.get(vin)
@@ -34,6 +47,12 @@ async def async_setup_entry(
         entities.append(
             BydDisablePollingSwitch(coordinator, gps_coordinator, vin, vehicle)
         )
+        for capability, suffix in _CAPABILITY_GATED_SUFFIXES.items():
+            if coordinator.capability_available(capability):
+                continue
+            stale = registry.async_get_entity_id("switch", DOMAIN, f"{vin}_{suffix}")
+            if stale:
+                registry.async_remove(stale)
         if coordinator.capability_available("car_on"):
             entities.append(BydCarOnSwitch(coordinator, vin, vehicle))
         if coordinator.capability_available("battery_heat"):

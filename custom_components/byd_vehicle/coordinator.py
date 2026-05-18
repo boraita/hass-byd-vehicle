@@ -299,6 +299,21 @@ class BydApi:
             self._client = None
             self._commands_enabled = False
 
+    async def async_refresh_vehicle_metadata(self, vin: str) -> Vehicle | None:
+        """Re-fetch ``/app/account/getAllListByUserId`` and return the entry.
+
+        Used to refresh the static-ish metadata that travels with the
+        vehicle list — most notably ``tbox_version`` which changes after
+        an OTA install.  Returns the matching :class:`Vehicle` or
+        ``None`` if the cloud no longer reports this VIN.
+        """
+        client = await self._ensure_client()
+        try:
+            vehicles = await client.get_vehicles()
+        except BydEndpointNotSupportedError:
+            return None
+        return next((v for v in vehicles if v.vin == vin), None)
+
     async def async_get_car(self, vin: str, vehicle: Vehicle) -> BydCar:
         """Obtain a ``BydCar`` aggregate for *vin*.
 
@@ -456,6 +471,13 @@ class BydDataUpdateCoordinator(DataUpdateCoordinator[VehicleSnapshot]):
         self._force_next_refresh = False
         self._car: BydCar | None = None
         self._realtime_endpoint_unsupported: bool = False
+        self._energy_supported: bool | None = None
+        # ``getEnergyConsumption`` returns a payload but with
+        # ``nearestEnergyConsumption.*Distribution`` always ``"--"`` on
+        # several VINs (notably Sealion 7 EU).  Treat as a separate flag
+        # so we can suppress only the 4 distribution sensors while keeping
+        # the rest of the energy entities working.
+        self._energy_distribution_supported: bool | None = None
         self._cancel_hvac_final_retry: CALLBACK_TYPE | None = None
 
     # ------------------------------------------------------------------
@@ -571,6 +593,50 @@ class BydDataUpdateCoordinator(DataUpdateCoordinator[VehicleSnapshot]):
     @property
     def vehicle(self) -> Vehicle:
         return self._vehicle
+
+    async def async_refresh_firmware_metadata(self) -> str | None:
+        """Refresh ``vehicle.tbox_version`` from the cloud vehicle list.
+
+        Fires :event:`byd_vehicle_firmware_changed` on the HA bus when
+        ``tbox_version`` transitions from its previous value (typically
+        after an OTA is applied).  Returns the new version or ``None``
+        if the refresh failed.
+        """
+        previous = self._vehicle.tbox_version
+        refreshed = await self._api.async_refresh_vehicle_metadata(self._vin)
+        if refreshed is None:
+            return None
+        self._vehicle = refreshed
+        if previous != refreshed.tbox_version:
+            self.hass.bus.async_fire(
+                "byd_vehicle_firmware_changed",
+                {
+                    "vin": self._vin,
+                    "previous_version": previous or None,
+                    "new_version": refreshed.tbox_version or None,
+                },
+            )
+            _LOGGER.info(
+                "Firmware change detected: vin=%s, %s -> %s",
+                self._vin[-6:],
+                previous or "?",
+                refreshed.tbox_version or "?",
+            )
+            # Push the updated snapshot so the tbox_version sensor refreshes.
+            current = self.data
+            if current is not None:
+                self.async_set_updated_data(
+                    VehicleSnapshot(
+                        vehicle=refreshed,
+                        realtime=current.realtime,
+                        hvac=current.hvac,
+                        gps=current.gps,
+                        charging=current.charging,
+                        energy=current.energy,
+                        charging_schedule=current.charging_schedule,
+                    )
+                )
+        return refreshed.tbox_version or None
 
     @property
     def has_pin_configured(self) -> bool:
@@ -811,16 +877,57 @@ class BydDataUpdateCoordinator(DataUpdateCoordinator[VehicleSnapshot]):
                 exc,
             )
 
+    @property
+    def energy_supported(self) -> bool | None:
+        """Whether ``/vehicleInfo/vehicle/getEnergyConsumption`` is supported.
+
+        ``None`` until the first fetch has been attempted, then ``True``
+        on success or ``False`` when the cloud answers ``code=1001`` for
+        this VIN (typically Sealion 7 EU and a few other trims).
+        """
+        return self._energy_supported
+
+    @property
+    def energy_distribution_supported(self) -> bool | None:
+        """Whether per-leg ``*_distribution`` fields populate for this VIN.
+
+        Distinct from :attr:`energy_supported` because the endpoint can
+        respond ``200 OK`` with the four ``*Distribution`` fields fixed
+        to the ``"--"`` sentinel (which pyBYD normalises to ``None``).
+        """
+        return self._energy_distribution_supported
+
     async def async_fetch_energy(self) -> None:
         """Service handler: fetch energy consumption and log the raw response."""
         if self._car is None:
             return
         try:
             result = await self._car.update_energy()
+            self._energy_supported = True
+            nearest = getattr(result, "nearest_energy_consumption", None)
+            if nearest is not None:
+                self._energy_distribution_supported = any(
+                    getattr(nearest, attr, None) is not None
+                    for attr in (
+                        "drive_distribution",
+                        "elect_distribution",
+                        "air_distribution",
+                        "other_distribution",
+                    )
+                )
             _LOGGER.info(
                 "fetch_energy result: vin=%s, payload=%s",
                 self._vin[-6:],
                 result,
+            )
+        except BydEndpointNotSupportedError as exc:
+            self._energy_supported = False
+            self._energy_distribution_supported = False
+            _LOGGER.info(
+                "fetch_energy not supported for this VIN; "
+                "distribution sensors will be skipped: vin=%s, code=%s",
+                self._vin[-6:],
+                getattr(exc, "code", "?"),
             )
         except Exception as exc:  # noqa: BLE001
             _LOGGER.warning(
