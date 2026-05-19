@@ -9,7 +9,7 @@
   "iot_class": "cloud_polling",
   "issue_tracker": "https://github.com/jkaberg/hass-byd-vehicle/issues",
   "requirements": [
-    "pybyd @ git+https://github.com/boraita/pyBYD@feat/sealion-8-restore"
+    "pybyd @ git+https://github.com/boraita/pyBYD@feat/sealion-9-open-windows"
   ],
-  "version": "0.0.80-sealion.8"
+  "version": "0.0.80-sealion.9"
 }

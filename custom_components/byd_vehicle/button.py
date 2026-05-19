@@ -49,6 +49,16 @@ BUTTON_DESCRIPTIONS: tuple[BydButtonDescription, ...] = (
         capability_key="close_windows",
         car_command=lambda car: car.windows.close(),
     ),
+    # Open windows is a best-guess mirror of CLOSEWINDOW.  Binary
+    # full-open only — partial / vent-mode requires a different payload
+    # (see WindowsCapability docstring).
+    BydButtonDescription(
+        key="open_windows",
+        name="Open windows",
+        icon="mdi:window-open",
+        capability_key="open_windows",
+        car_command=lambda car: car.windows.open(),
+    ),
     BydButtonDescription(
         key="open_trunk",
         name="Open trunk",
