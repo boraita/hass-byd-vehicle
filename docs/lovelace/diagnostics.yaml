@@ -1,0 +1,21 @@
+# BYD Sealion 7 — integration diagnostics
+
+type: entities
+title: Integration health
+entities:
+  - entity: binary_sensor.byd_sealion_7_cloud_responsive
+    name: Cloud responsive
+  - entity: sensor.byd_sealion_7_last_mqtt_push_at
+    name: Last MQTT push
+  - entity: sensor.byd_sealion_7_last_successful_fetch_at
+    name: Last HTTP fetch
+  - entity: sensor.byd_sealion_7_effective_poll_interval
+    name: Current poll interval (adaptive)
+  - entity: number.byd_sealion_7_realtime_poll_interval
+    name: Base poll interval
+  - entity: switch.byd_sealion_7_disable_polling
+    name: Polling disabled
+  - entity: sensor.byd_sealion_7_t_box_version
+    name: T-Box version
+  - entity: binary_sensor.byd_sealion_7_ota_upgrade_status
+    name: OTA in progress

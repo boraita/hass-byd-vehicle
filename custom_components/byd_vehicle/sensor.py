@@ -582,6 +582,34 @@ SENSOR_DESCRIPTIONS: tuple[BydSensorDescription, ...] = (
         entity_registry_enabled_default=False,
         entity_category=EntityCategory.DIAGNOSTIC,
     ),
+    # Capabilities snapshot — exposes the cloud-reported
+    # ``vehicleFunLearnInfo`` dict as state attributes.  The dict carries
+    # ~46 flags (NFC, OTA, battery heating variants, third row, sentry,
+    # etc.) that can change after an OTA — useful for automations that
+    # condition on capabilities, and for diagnostics when a feature stops
+    # working.  State value is the count of registered capabilities.
+    BydSensorDescription(
+        key="capabilities",
+        name="Capabilities",
+        source="vehicle",
+        icon="mdi:format-list-checkbox",
+        value_fn=lambda v: (
+            sum(
+                1
+                for x in (v.raw.get("vehicleFunLearnInfo") or {}).values()
+                if x and x != -1
+            )
+            if v is not None and isinstance(getattr(v, "raw", None), dict)
+            else None
+        ),
+        state_attrs_fn=lambda v: (
+            v.raw.get("vehicleFunLearnInfo") or {}
+            if v is not None and isinstance(getattr(v, "raw", None), dict)
+            else {}
+        ),
+        entity_registry_enabled_default=False,
+        entity_category=EntityCategory.DIAGNOSTIC,
+    ),
     # Effective poll interval — diagnostic visibility of the adaptive
     # polling decision.  Value is the *current* update_interval the
     # coordinator is using (may be 1×/2×/4×/8× the user-configured base).

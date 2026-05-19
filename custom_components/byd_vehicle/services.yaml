@@ -121,3 +121,30 @@ force_poll_now:
       selector:
         device:
           integration: byd_vehicle
+
+schedule_climate:
+  fields:
+    device_id:
+      required: true
+      selector:
+        device:
+          integration: byd_vehicle
+    temperature:
+      default: 21.0
+      selector:
+        number:
+          min: 16
+          max: 30
+          step: 0.5
+          unit_of_measurement: °C
+    duration:
+      default: 20
+      selector:
+        number:
+          min: 5
+          max: 60
+          step: 5
+          unit_of_measurement: minutes
+    booking_time:
+      selector:
+        datetime:

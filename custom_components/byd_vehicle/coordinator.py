@@ -477,6 +477,14 @@ class BydDataUpdateCoordinator(DataUpdateCoordinator[VehicleSnapshot]):
         self._last_mqtt_push_at: datetime | None = None
         self._last_successful_fetch_at: datetime | None = None
         self._consecutive_fetch_failures: int = 0
+        # Hardening: track whether we've ever received a non-sentinel realtime
+        # payload.  Used to (a) skip adaptive backoff during the first 5 min
+        # after startup so we hammer the cloud until the car responds, and
+        # (b) schedule an auto-force-poll if the first fetch returns sentinel
+        # zeros (car was in deep sleep when HA restarted).
+        self._setup_started_at: datetime = datetime.now(tz=UTC)
+        self._first_real_payload_at: datetime | None = None
+        self._auto_recovery_scheduled: bool = False
         # ``getEnergyConsumption`` returns a payload but with
         # ``nearestEnergyConsumption.*Distribution`` always ``"--"`` on
         # several VINs (notably Sealion 7 EU).  Treat as a separate flag
@@ -496,6 +504,7 @@ class BydDataUpdateCoordinator(DataUpdateCoordinator[VehicleSnapshot]):
         self._last_mqtt_push_at = datetime.now(tz=UTC)
         self._schedule_hvac_final_reconcile_if_needed(previous_snapshot, snapshot)
         self._track_charge_session(previous_snapshot, snapshot)
+        self._maybe_fire_phase_changed(previous_snapshot, snapshot)
 
         previous_timestamp = None
         if previous_snapshot is not None and previous_snapshot.realtime is not None:
@@ -600,6 +609,56 @@ class BydDataUpdateCoordinator(DataUpdateCoordinator[VehicleSnapshot]):
     @property
     def vehicle(self) -> Vehicle:
         return self._vehicle
+
+    async def async_schedule_climate(
+        self,
+        *,
+        temperature: float = 21.0,
+        booking_time_iso: str | None = None,
+        duration: int = 20,
+    ) -> None:
+        """Schedule HVAC pre-conditioning at the given time.
+
+        ``booking_time_iso``: ISO datetime (local) when climate should start.
+        Defaults to "now + 1 hour" if omitted.
+        """
+        if self._car is None:
+            raise HomeAssistantError(
+                f"BYD vehicle {self._vin[-6:]} not ready for climate commands"
+            )
+        from pybyd.models.control import ClimateScheduleParams
+
+        if booking_time_iso is None:
+            booking_dt = datetime.now(tz=UTC) + timedelta(hours=1)
+        else:
+            booking_dt = datetime.fromisoformat(booking_time_iso)
+            if booking_dt.tzinfo is None:
+                booking_dt = booking_dt.replace(tzinfo=UTC)
+
+        # ``duration`` (minutes) maps to BYD's ``time_span`` code:
+        # 1=10min, 2=15min, 3=20min, 4=25min, 5=30min.  Closest match.
+        time_span_code = max(1, min(5, round((duration - 5) / 5)))
+        params = ClimateScheduleParams(
+            remote_mode=1,
+            booking_time=int(booking_dt.timestamp()),
+            temperature=temperature,
+            time_span=time_span_code,
+        )
+        try:
+            await self._car.hvac.schedule(params)
+        except BydEndpointNotSupportedError as exc:
+            raise HomeAssistantError(
+                "schedule_climate not supported for this vehicle"
+            ) from exc
+        except (BydApiError, BydTransportError) as exc:
+            raise HomeAssistantError(f"schedule_climate failed: {exc}") from exc
+        _LOGGER.info(
+            "schedule_climate accepted: vin=%s booking_time=%s temp=%s duration=%s",
+            self._vin[-6:],
+            booking_dt.isoformat(),
+            temperature,
+            duration,
+        )
 
     async def async_force_poll_now(self) -> None:
         """Force a fresh fetch of realtime + charging + GPS in sequence.
@@ -805,9 +864,41 @@ class BydDataUpdateCoordinator(DataUpdateCoordinator[VehicleSnapshot]):
             self._last_successful_fetch_at = datetime.now(tz=UTC)
             self._consecutive_fetch_failures = 0
 
+        # Mark the first non-sentinel payload — used by the adaptive
+        # interval to know when to stop aggressive startup polling.
+        if self._first_real_payload_at is None and not self._is_sentinel_payload(
+            snapshot
+        ):
+            self._first_real_payload_at = datetime.now(tz=UTC)
+
+        # If we got a sentinel payload and haven't yet seen real data,
+        # schedule a one-shot recovery force-poll 60s later.  Covers the
+        # "battery_level=unknown after restart" case where the car was
+        # in deep sleep when HA came back.
+        if (
+            self._first_real_payload_at is None
+            and not self._auto_recovery_scheduled
+            and self._is_sentinel_payload(snapshot)
+        ):
+            self._auto_recovery_scheduled = True
+            _LOGGER.info(
+                "vin=%s: sentinel payload at startup, scheduling recovery "
+                "force-poll in 60s",
+                self._vin[-6:],
+            )
+
+            async def _recover(_now: Any) -> None:
+                try:
+                    await self.async_force_poll_now()
+                finally:
+                    self._auto_recovery_scheduled = False
+
+            async_call_later(self.hass, 60, _recover)
+
         # Adapt next poll interval based on the just-observed state.
         self._apply_adaptive_interval(snapshot)
         self._track_charge_session(previous_snapshot, snapshot)
+        self._maybe_fire_phase_changed(previous_snapshot, snapshot)
 
         return snapshot
 
@@ -819,6 +910,26 @@ class BydDataUpdateCoordinator(DataUpdateCoordinator[VehicleSnapshot]):
     # the car is actively pushing state, so HTTP is redundant.
     _MQTT_AWARE_WINDOW = timedelta(minutes=10)
     _MQTT_AWARE_BONUS = 2  # additional multiplier when push is recent
+
+    # Aggressive-poll window after startup: skip adaptive backoff for the
+    # first 5 minutes so a deep-sleep car doesn't strand us on stale data.
+    _STARTUP_AGGRESSIVE_WINDOW = timedelta(minutes=5)
+
+    def _is_sentinel_payload(self, snapshot: VehicleSnapshot | None) -> bool:
+        """Whether the realtime payload looks like a "sleeping car" sentinel.
+
+        Indicators: ``online_state == 0`` AND ``elec_percent == 0`` AND
+        ``total_mileage == 0`` (or ``None``).  These are the values BYD's
+        cloud returns when the T-Box hasn't been queried recently.
+        """
+        if snapshot is None or snapshot.realtime is None:
+            return True
+        rt = snapshot.realtime
+        if getattr(rt, "is_online", None) is False:
+            return True
+        elec = getattr(rt, "elec_percent", None)
+        mileage = getattr(rt, "total_mileage", None)
+        return (elec is None or elec == 0) and (mileage is None or mileage == 0)
 
     def _compute_adaptive_interval(self, snapshot: VehicleSnapshot) -> timedelta:
         """Return the next telemetry interval based on the current snapshot.
@@ -856,13 +967,23 @@ class BydDataUpdateCoordinator(DataUpdateCoordinator[VehicleSnapshot]):
             else:
                 multiplier = 4
 
+        # Startup-aggressive: until we've received a real (non-sentinel)
+        # payload OR 5 min have elapsed, keep polling at 1× to chase the
+        # car out of deep sleep.
+        now = datetime.now(tz=UTC)
+        in_startup_window = (
+            now - self._setup_started_at < self._STARTUP_AGGRESSIVE_WINDOW
+        )
+        if in_startup_window and self._first_real_payload_at is None:
+            return base
+
         # MQTT-aware bonus: only when not in the 1× (active) bucket — we
         # want fresh HTTP data while charging/driving even if push is
         # flowing.  For all idle/waiting states, trust the push channel.
         if (
             multiplier > 1
             and self._last_mqtt_push_at is not None
-            and datetime.now(tz=UTC) - self._last_mqtt_push_at < self._MQTT_AWARE_WINDOW
+            and now - self._last_mqtt_push_at < self._MQTT_AWARE_WINDOW
         ):
             multiplier *= self._MQTT_AWARE_BONUS
 
@@ -882,6 +1003,61 @@ class BydDataUpdateCoordinator(DataUpdateCoordinator[VehicleSnapshot]):
             new_interval,
         )
         self.update_interval = new_interval
+
+    def _derive_phase(self, snap: VehicleSnapshot | None) -> str | None:
+        """Replicate the logic from sensor._charge_session_phase.
+
+        Returns the same string label so the HA event fires consistently
+        with the value shown by ``sensor.charge_session_phase``.
+        """
+        if snap is None or snap.charging is None:
+            return None
+        ch = snap.charging
+        rt = snap.realtime
+        connect_state = getattr(ch, "connect_state", None)
+        charging_state = getattr(ch, "charging_state", None)
+        wait_status = getattr(ch, "wait_status", None)
+        soc = getattr(ch, "soc", None) or (
+            getattr(rt, "elec_percent", None) if rt else None
+        )
+        if connect_state == 0:
+            return "unplugged"
+        if wait_status == 1 and charging_state != 1:
+            return "plugged_waiting_schedule"
+        if charging_state == 9:
+            return "handshake_locked"
+        if charging_state == 1:
+            return "charging"
+        if charging_state in (0, 15):
+            if soc is not None and soc >= 100:
+                return "charge_complete"
+            return "plugged_idle"
+        return "unknown"
+
+    def _maybe_fire_phase_changed(
+        self,
+        previous: VehicleSnapshot | None,
+        current: VehicleSnapshot,
+    ) -> None:
+        """Fire :event:`byd_vehicle_phase_changed` on phase transition."""
+        prev_phase = self._derive_phase(previous)
+        new_phase = self._derive_phase(current)
+        if new_phase is None or prev_phase == new_phase:
+            return
+        self.hass.bus.async_fire(
+            "byd_vehicle_phase_changed",
+            {
+                "vin": self._vin,
+                "previous_phase": prev_phase,
+                "new_phase": new_phase,
+            },
+        )
+        _LOGGER.debug(
+            "Phase change: vin=%s %s -> %s",
+            self._vin[-6:],
+            prev_phase or "?",
+            new_phase,
+        )
 
     def _track_charge_session(
         self,

@@ -1,0 +1,46 @@
+# BYD Sealion 7 — climate + seats + tires
+
+type: vertical-stack
+cards:
+  - type: thermostat
+    entity: climate.byd_sealion_7_climate
+
+  - type: entities
+    title: Climate diagnostics
+    entities:
+      - entity: sensor.byd_sealion_7_cabin_temperature
+        name: Cabin temperature
+      - entity: sensor.byd_sealion_7_exterior_temperature
+        name: Exterior temperature
+      - entity: sensor.byd_sealion_7_pm2_5
+        name: PM2.5
+
+  - type: entities
+    title: Seat climate
+    entities:
+      - entity: select.byd_sealion_7_driver_seat_heating
+        name: Driver heat
+      - entity: select.byd_sealion_7_driver_seat_ventilation
+        name: Driver vent
+      - entity: select.byd_sealion_7_passenger_seat_heating
+        name: Passenger heat
+      - entity: select.byd_sealion_7_passenger_seat_ventilation
+        name: Passenger vent
+      - entity: select.byd_sealion_7_rear_left_seat_heating
+        name: Rear left heat
+      - entity: select.byd_sealion_7_rear_right_seat_heating
+        name: Rear right heat
+      - entity: switch.byd_sealion_7_steering_wheel_heating
+        name: Steering wheel heat
+
+  - type: glance
+    title: Tire pressures
+    entities:
+      - entity: sensor.byd_sealion_7_front_left_tire_pressure
+        name: FL
+      - entity: sensor.byd_sealion_7_front_right_tire_pressure
+        name: FR
+      - entity: sensor.byd_sealion_7_rear_left_tire_pressure
+        name: RL
+      - entity: sensor.byd_sealion_7_rear_right_tire_pressure
+        name: RR

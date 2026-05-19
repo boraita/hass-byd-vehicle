@@ -364,6 +364,7 @@ _SERVICE_START_CHARGING = "start_charging"
 _SERVICE_SAVE_CHARGING_SCHEDULE = "save_charging_schedule"
 _SERVICE_REFRESH_FIRMWARE = "refresh_firmware_metadata"
 _SERVICE_FORCE_POLL = "force_poll_now"
+_SERVICE_SCHEDULE_CLIMATE = "schedule_climate"
 
 # Repeat-mode → BYD ``chargeWay`` wire format.
 _REPEAT_TO_CHARGE_WAY: dict[str, str] = {
@@ -393,6 +394,7 @@ _ALL_SERVICES = (
     _SERVICE_SAVE_CHARGING_SCHEDULE,
     _SERVICE_REFRESH_FIRMWARE,
     _SERVICE_FORCE_POLL,
+    _SERVICE_SCHEDULE_CLIMATE,
 )
 
 
@@ -545,6 +547,18 @@ def _async_register_services(hass: HomeAssistant) -> None:
             coordinator, _ = _get_coordinators(hass, entry_id, vin)
             await coordinator.async_force_poll_now()
 
+    async def _handle_schedule_climate(call: ServiceCall) -> None:
+        temperature = float(call.data.get("temperature", 21.0))
+        duration = int(call.data.get("duration", 20))
+        booking_time = call.data.get("booking_time")
+        for entry_id, vin in _resolve_vins_from_call(hass, call):
+            coordinator, _ = _get_coordinators(hass, entry_id, vin)
+            await coordinator.async_schedule_climate(
+                temperature=temperature,
+                duration=duration,
+                booking_time_iso=booking_time,
+            )
+
     async def _handle_save_charging_schedule(call: ServiceCall) -> None:
         # Resolve targets first so the input-shape errors below fire on
         # the first device only — they're identical for every target.
@@ -596,6 +610,9 @@ def _async_register_services(hass: HomeAssistant) -> None:
         DOMAIN, _SERVICE_REFRESH_FIRMWARE, _handle_refresh_firmware
     )
     hass.services.async_register(DOMAIN, _SERVICE_FORCE_POLL, _handle_force_poll)
+    hass.services.async_register(
+        DOMAIN, _SERVICE_SCHEDULE_CLIMATE, _handle_schedule_climate
+    )
 
     _LOGGER.debug("Registered %s domain services", len(_ALL_SERVICES))
 

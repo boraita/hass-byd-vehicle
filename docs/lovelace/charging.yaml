@@ -1,0 +1,47 @@
+# BYD Sealion 7 — charging dashboard
+
+type: vertical-stack
+cards:
+  - type: glance
+    title: Charge session
+    entities:
+      - entity: sensor.byd_sealion_7_charge_session_phase
+        name: Phase
+      - entity: sensor.byd_sealion_7_battery_level
+        name: SoC
+      - entity: sensor.byd_sealion_7_charge_session_soc_added
+        name: Added this session
+      - entity: sensor.byd_sealion_7_time_until_full
+        name: To full
+      - entity: sensor.byd_sealion_7_charge_session_duration
+        name: Duration
+
+  - type: entities
+    title: Smart charging schedule
+    entities:
+      - entity: binary_sensor.byd_sealion_7_scheduled_charge_enabled
+        name: Schedule enabled
+      - entity: sensor.byd_sealion_7_scheduled_charge_start_time
+        name: Start
+      - entity: sensor.byd_sealion_7_scheduled_charge_end_time
+        name: End
+      - entity: sensor.byd_sealion_7_scheduled_charge_repeat
+        name: Repeat
+      - entity: binary_sensor.byd_sealion_7_scheduled_charge_until_full
+        name: Until full
+      - entity: button.byd_sealion_7_start_charging
+        name: Start charging now
+
+  - type: entities
+    title: Live charge metrics
+    entities:
+      - entity: binary_sensor.byd_sealion_7_charging
+        name: Currently charging
+      - entity: sensor.byd_sealion_7_battery_power
+        name: Battery power (W, instantaneous)
+      - entity: sensor.byd_sealion_7_charge_remaining_time
+        name: Remaining (BYD estimate)
+      - entity: sensor.byd_sealion_7_lifetime_average_ev_consumption
+        name: Lifetime avg consumption
+      - entity: sensor.byd_sealion_7_today_s_energy_consumption
+        name: Today's avg consumption

@@ -1,0 +1,33 @@
+# BYD Sealion 7 — at-a-glance summary
+
+type: vertical-stack
+cards:
+  - type: glance
+    title: BYD Sealion 7
+    entities:
+      - entity: sensor.byd_sealion_7_battery_level
+        name: SoC
+      - entity: sensor.byd_sealion_7_range
+        name: Range
+      - entity: binary_sensor.byd_sealion_7_online
+        name: Online
+      - entity: binary_sensor.byd_sealion_7_plug
+        name: Plug
+      - entity: lock.byd_sealion_7_lock
+        name: Lock
+      - entity: binary_sensor.byd_sealion_7_doors
+        name: Doors
+
+  - type: entities
+    title: Status
+    entities:
+      - entity: sensor.byd_sealion_7_charge_session_phase
+        name: Charge phase
+      - entity: sensor.byd_sealion_7_charging_state
+        name: Charging state
+      - entity: binary_sensor.byd_sealion_7_vehicle_on
+        name: Vehicle on
+      - entity: sensor.byd_sealion_7_odometer
+        name: Odometer
+      - entity: device_tracker.byd_sealion_7_location
+        name: Location
