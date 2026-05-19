@@ -73,25 +73,6 @@ BUTTON_DESCRIPTIONS: tuple[BydButtonDescription, ...] = (
         capability_key="close_trunk",
         car_command=lambda car: car.trunk.close(),
     ),
-    # One-tap pre-conditioning — payload is UNVERIFIED.  The button
-    # invocation sends commandType=ONETAPPREP with no controlParams; if
-    # the BYD cloud rejects it with code=1001/1009 we'll need to wire a
-    # typed param model (see CONTROLS_DISCOVERED.md and the OneTapCapability
-    # docstring in pyBYD).
-    BydButtonDescription(
-        key="one_tap_prep",
-        name="One-tap prep",
-        icon="mdi:car-cog",
-        capability_key="one_tap_prep",
-        car_command=lambda car: car.one_tap.prep(),
-    ),
-    BydButtonDescription(
-        key="one_tap_shutdown",
-        name="One-tap shutdown",
-        icon="mdi:power",
-        capability_key="one_tap_shutdown",
-        car_command=lambda car: car.one_tap.shutdown(),
-    ),
 )
 
 
