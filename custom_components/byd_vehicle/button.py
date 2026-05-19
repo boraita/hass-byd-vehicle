@@ -49,13 +49,14 @@ BUTTON_DESCRIPTIONS: tuple[BydButtonDescription, ...] = (
         capability_key="close_windows",
         car_command=lambda car: car.windows.close(),
     ),
-    # Open windows is a best-guess mirror of CLOSEWINDOW.  Binary
-    # full-open only — partial / vent-mode requires a different payload
-    # (see WindowsCapability docstring).
+    # Vent windows: live-verified on Sealion 7 — `OPENWINDOW` cracks
+    # all windows to ~10 % rather than fully dropping them.  This is
+    # BYD's native ventilation flow.  No known remote command for
+    # full-drop; see WindowsCapability docstring.
     BydButtonDescription(
         key="open_windows",
-        name="Open windows",
-        icon="mdi:window-open",
+        name="Vent windows",
+        icon="mdi:weather-windy",
         capability_key="open_windows",
         car_command=lambda car: car.windows.open(),
     ),
