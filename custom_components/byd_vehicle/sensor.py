@@ -251,6 +251,64 @@ def _eq_consumption_value(snap: Any) -> Any:
     return getattr(nearest, "avg_ev_consumption", None)
 
 
+_CHARGING_STATE_LABELS: dict[int, str] = {
+    0: "not_charging",
+    1: "charging",
+    9: "connected_waiting",
+    15: "connected",
+}
+
+
+def _charging_state_to_label(charging: Any) -> str | None:
+    """Map ``charging.charging_state`` numeric value to a user-facing label."""
+    if charging is None:
+        return None
+    value = getattr(charging, "charging_state", None)
+    if value is None:
+        return "unknown"
+    return _CHARGING_STATE_LABELS.get(value, "unknown")
+
+
+def _charge_session_phase(snap: Any) -> str | None:
+    """Derive a single user-facing phase from charging + realtime + schedule.
+
+    Decision tree (first match wins):
+        unplugged                  — connect_state == 0
+        plugged_waiting_schedule   — wait_status == 1 AND charging_state != 1
+        handshake_locked           — charging_state == 9
+        charging                   — charging_state == 1
+        charge_complete            — charging_state in (0, 15) AND soc == 100
+        plugged_idle               — charging_state in (0, 15) AND plug present
+        unknown                    — otherwise
+    """
+    if snap is None:
+        return None
+    charging = getattr(snap, "charging", None)
+    realtime = getattr(snap, "realtime", None)
+    if charging is None and realtime is None:
+        return "unknown"
+    connect_state = getattr(charging, "connect_state", None) if charging else None
+    charging_state = getattr(charging, "charging_state", None) if charging else None
+    wait_status = getattr(charging, "wait_status", None) if charging else None
+    soc = (getattr(charging, "soc", None) if charging else None) or (
+        getattr(realtime, "elec_percent", None) if realtime else None
+    )
+
+    if connect_state == 0:
+        return "unplugged"
+    if wait_status == 1 and charging_state != 1:
+        return "plugged_waiting_schedule"
+    if charging_state == 9:
+        return "handshake_locked"
+    if charging_state == 1:
+        return "charging"
+    if charging_state in (0, 15):
+        if soc is not None and soc >= 100:
+            return "charge_complete"
+        return "plugged_idle"
+    return "unknown"
+
+
 def _eq_consumption_unit(snap: Any) -> Any:
     """Return the matching unit for ``_eq_consumption_value``."""
     if snap is None:
@@ -468,13 +526,47 @@ SENSOR_DESCRIPTIONS: tuple[BydSensorDescription, ...] = (
     # Charging detail from the smart-charging endpoint.  The ``realtime``
     # payload reports ``chargingState=-1`` permanently on several VINs
     # (notably Sealion 7 EU), so we read the authoritative value from
-    # ``/control/smartCharge/homePage`` instead.
+    # ``/control/smartCharge/homePage`` instead.  Exposed as a readable
+    # enum string instead of a raw int so the UI shows "charging" / etc.
+    # instead of "1" / "15".  The numeric value is preserved in attributes.
     BydSensorDescription(
         key="charging_state",
         source="charging",
         icon="mdi:ev-station",
+        device_class=SensorDeviceClass.ENUM,
+        options=[
+            "not_charging",
+            "charging",
+            "connected_waiting",
+            "connected",
+            "unknown",
+        ],
+        value_fn=_charging_state_to_label,
+        state_attrs_fn=lambda c: (
+            {"raw_value": c.charging_state} if c is not None else {}
+        ),
         entity_registry_enabled_default=False,
         entity_category=EntityCategory.DIAGNOSTIC,
+    ),
+    # High-level session phase: combines ``charging.charging_state`` +
+    # ``connect_state`` + ``wait_status`` into a single user-facing enum
+    # so dashboards/automations don't have to do the boolean algebra.
+    BydSensorDescription(
+        key="charge_session_phase",
+        name="Charge session phase",
+        source="snapshot",
+        icon="mdi:ev-station",
+        device_class=SensorDeviceClass.ENUM,
+        options=[
+            "unplugged",
+            "plugged_idle",
+            "plugged_waiting_schedule",
+            "handshake_locked",
+            "charging",
+            "charge_complete",
+            "unknown",
+        ],
+        value_fn=_charge_session_phase,
     ),
     # T-Box version (from vehicle metadata, refreshable via the
     # ``byd_vehicle.refresh_firmware_metadata`` service).  Exposed as a
@@ -487,6 +579,32 @@ SENSOR_DESCRIPTIONS: tuple[BydSensorDescription, ...] = (
         source="vehicle",
         attr_key="tbox_version",
         icon="mdi:chip",
+        entity_registry_enabled_default=False,
+        entity_category=EntityCategory.DIAGNOSTIC,
+    ),
+    # Effective poll interval — diagnostic visibility of the adaptive
+    # polling decision.  Value is the *current* update_interval the
+    # coordinator is using (may be 1×/2×/4×/8× the user-configured base).
+    BydSensorDescription(
+        key="effective_poll_interval",
+        name="Effective poll interval",
+        source="coordinator",
+        attr_key="effective_poll_interval_seconds",
+        native_unit_of_measurement=UnitOfTime.SECONDS,
+        icon="mdi:timer-sync",
+        entity_registry_enabled_default=False,
+        entity_category=EntityCategory.DIAGNOSTIC,
+    ),
+    # Timestamp of the latest charging session start (i.e. the last time
+    # ``charging.charging_state`` transitioned to 1).  Cleared on plug-out.
+    # Useful for "how long has this charge been running" automations.
+    BydSensorDescription(
+        key="charge_session_started_at",
+        name="Charge session started at",
+        source="coordinator",
+        attr_key="charge_session_started_at",
+        device_class=SensorDeviceClass.TIMESTAMP,
+        icon="mdi:clock-start",
         entity_registry_enabled_default=False,
         entity_category=EntityCategory.DIAGNOSTIC,
     ),

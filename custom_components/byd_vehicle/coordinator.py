@@ -472,6 +472,7 @@ class BydDataUpdateCoordinator(DataUpdateCoordinator[VehicleSnapshot]):
         self._car: BydCar | None = None
         self._realtime_endpoint_unsupported: bool = False
         self._energy_supported: bool | None = None
+        self._charge_session_started_at: datetime | None = None
         # ``getEnergyConsumption`` returns a payload but with
         # ``nearestEnergyConsumption.*Distribution`` always ``"--"`` on
         # several VINs (notably Sealion 7 EU).  Treat as a separate flag
@@ -489,6 +490,7 @@ class BydDataUpdateCoordinator(DataUpdateCoordinator[VehicleSnapshot]):
         """Update from a state-engine push and reset next poll from this update."""
         previous_snapshot = self.data
         self._schedule_hvac_final_reconcile_if_needed(previous_snapshot, snapshot)
+        self._track_charge_session(previous_snapshot, snapshot)
 
         previous_timestamp = None
         if previous_snapshot is not None and previous_snapshot.realtime is not None:
@@ -773,7 +775,107 @@ class BydDataUpdateCoordinator(DataUpdateCoordinator[VehicleSnapshot]):
             snapshot.realtime is not None,
             snapshot.hvac is not None,
         )
+
+        # Adapt next poll interval based on the just-observed state.
+        self._apply_adaptive_interval(snapshot)
+        self._track_charge_session(previous_snapshot, snapshot)
+
         return snapshot
+
+    # ------------------------------------------------------------------
+    # Adaptive polling
+    # ------------------------------------------------------------------
+
+    def _compute_adaptive_interval(self, snapshot: VehicleSnapshot) -> timedelta:
+        """Return the next telemetry interval based on the current snapshot.
+
+        Multipliers (applied to the user-configured ``_fixed_interval``):
+          * 1×   — actively charging OR vehicle on (driving / climate active)
+          * 2×   — plugged & waiting (schedule pending or connector locked)
+          * 4×   — online idle (cable in, no schedule, no charge)
+          * 8×   — offline / sleeping
+        """
+        base = self._fixed_interval
+        if snapshot is None or snapshot.realtime is None:
+            return base * 4
+
+        realtime = snapshot.realtime
+        charging = snapshot.charging
+
+        if charging is not None and getattr(charging, "charging_state", None) == 1:
+            return base
+        if getattr(realtime, "is_charging", None) is True:
+            return base
+
+        if getattr(realtime, "is_vehicle_on", None) is True:
+            return base
+
+        if charging is not None:
+            if getattr(charging, "wait_status", None) == 1:
+                return base * 2
+            if getattr(charging, "charging_state", None) == 9:
+                return base * 2
+            if getattr(charging, "connect_state", None) == 1:
+                return base * 2
+
+        if getattr(realtime, "is_online", None) is False:
+            return base * 8
+
+        return base * 4
+
+    def _apply_adaptive_interval(self, snapshot: VehicleSnapshot) -> None:
+        """Update ``update_interval`` from the adaptive policy."""
+        if not self._polling_enabled:
+            return
+        new_interval = self._compute_adaptive_interval(snapshot)
+        if new_interval == self.update_interval:
+            return
+        _LOGGER.debug(
+            "Adaptive poll interval: vin=%s, %s -> %s",
+            self._vin[-6:],
+            self.update_interval,
+            new_interval,
+        )
+        self.update_interval = new_interval
+
+    def _track_charge_session(
+        self,
+        previous: VehicleSnapshot | None,
+        current: VehicleSnapshot,
+    ) -> None:
+        """Record the timestamp when ``charging_state`` transitions to 1."""
+
+        def _is_charging(snap: VehicleSnapshot | None) -> bool:
+            if snap is None or snap.charging is None:
+                return False
+            return getattr(snap.charging, "charging_state", None) == 1
+
+        was = _is_charging(previous)
+        now_charging = _is_charging(current)
+        if now_charging and not was:
+            self._charge_session_started_at = datetime.now(tz=UTC)
+        elif not now_charging and was:
+            # Keep the timestamp on the way out so automations can read
+            # "last charge started at" — only clear on a fresh disconnect
+            connect_state = (
+                getattr(current.charging, "connect_state", None)
+                if current.charging
+                else None
+            )
+            if connect_state == 0:
+                self._charge_session_started_at = None
+
+    @property
+    def charge_session_started_at(self) -> datetime | None:
+        """UTC timestamp of the latest ``charging_state==1`` transition."""
+        return self._charge_session_started_at
+
+    @property
+    def effective_poll_interval_seconds(self) -> int:
+        """Current next-poll interval (may differ from base due to adaptive)."""
+        if self.update_interval is None:
+            return 0
+        return int(self.update_interval.total_seconds())
 
     # ------------------------------------------------------------------
     # Polling control
@@ -789,10 +891,20 @@ class BydDataUpdateCoordinator(DataUpdateCoordinator[VehicleSnapshot]):
         return int(self._fixed_interval.total_seconds())
 
     def set_poll_interval(self, seconds: int) -> None:
-        """Set telemetry poll interval in seconds."""
+        """Set telemetry poll interval base in seconds.
+
+        The actual ``update_interval`` may be larger if the adaptive policy
+        decides the vehicle is idle/sleeping — see
+        :meth:`_compute_adaptive_interval`.
+        """
         self._fixed_interval = timedelta(seconds=seconds)
         if self._polling_enabled:
-            self.update_interval = self._fixed_interval
+            # Re-apply adaptive against current state so the new base
+            # takes effect on the next tick.
+            if self.data is not None:
+                self._apply_adaptive_interval(self.data)
+            else:
+                self.update_interval = self._fixed_interval
         self.async_update_listeners()
 
     def set_polling_enabled(self, enabled: bool) -> bool:

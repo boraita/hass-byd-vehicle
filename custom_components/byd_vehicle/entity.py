@@ -115,6 +115,8 @@ class BydVehicleEntity(CoordinatorEntity[BydDataUpdateCoordinator]):
         if source == "vehicle":
             snap = self._snapshot()
             return snap.vehicle if snap is not None else self._vehicle
+        if source == "coordinator":
+            return self.coordinator
         if source == "snapshot":
             return self._snapshot()
         if source.startswith("energy_"):
