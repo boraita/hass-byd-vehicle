@@ -363,6 +363,7 @@ _SERVICE_FETCH_ENERGY = "fetch_energy"
 _SERVICE_START_CHARGING = "start_charging"
 _SERVICE_SAVE_CHARGING_SCHEDULE = "save_charging_schedule"
 _SERVICE_REFRESH_FIRMWARE = "refresh_firmware_metadata"
+_SERVICE_FORCE_POLL = "force_poll_now"
 
 # Repeat-mode → BYD ``chargeWay`` wire format.
 _REPEAT_TO_CHARGE_WAY: dict[str, str] = {
@@ -391,6 +392,7 @@ _ALL_SERVICES = (
     _SERVICE_START_CHARGING,
     _SERVICE_SAVE_CHARGING_SCHEDULE,
     _SERVICE_REFRESH_FIRMWARE,
+    _SERVICE_FORCE_POLL,
 )
 
 
@@ -538,6 +540,11 @@ def _async_register_services(hass: HomeAssistant) -> None:
             coordinator, _ = _get_coordinators(hass, entry_id, vin)
             await coordinator.async_refresh_firmware_metadata()
 
+    async def _handle_force_poll(call: ServiceCall) -> None:
+        for entry_id, vin in _resolve_vins_from_call(hass, call):
+            coordinator, _ = _get_coordinators(hass, entry_id, vin)
+            await coordinator.async_force_poll_now()
+
     async def _handle_save_charging_schedule(call: ServiceCall) -> None:
         # Resolve targets first so the input-shape errors below fire on
         # the first device only — they're identical for every target.
@@ -588,6 +595,7 @@ def _async_register_services(hass: HomeAssistant) -> None:
     hass.services.async_register(
         DOMAIN, _SERVICE_REFRESH_FIRMWARE, _handle_refresh_firmware
     )
+    hass.services.async_register(DOMAIN, _SERVICE_FORCE_POLL, _handle_force_poll)
 
     _LOGGER.debug("Registered %s domain services", len(_ALL_SERVICES))
 

@@ -92,6 +92,17 @@ BINARY_SENSOR_DESCRIPTIONS: tuple[BydBinarySensorDescription, ...] = (
         device_class=BinarySensorDeviceClass.CONNECTIVITY,
         value_fn=lambda r: r.is_online,
     ),
+    # Cloud-side responsiveness — flips off after 3 consecutive HTTP
+    # fetch failures (e.g. rate-limit 1008, deep-sleep no-reply).  Useful
+    # for differentiating "car is sleeping" from "cloud is rate-limiting".
+    BydBinarySensorDescription(
+        key="cloud_responsive",
+        source="coordinator",
+        device_class=BinarySensorDeviceClass.CONNECTIVITY,
+        value_fn=lambda c: bool(getattr(c, "is_cloud_responsive", True)),
+        entity_registry_enabled_default=False,
+        entity_category=EntityCategory.DIAGNOSTIC,
+    ),
     BydBinarySensorDescription(
         key="is_charging",
         source="realtime",

@@ -113,3 +113,11 @@ refresh_firmware_metadata:
       selector:
         device:
           integration: byd_vehicle
+
+force_poll_now:
+  fields:
+    device_id:
+      required: true
+      selector:
+        device:
+          integration: byd_vehicle

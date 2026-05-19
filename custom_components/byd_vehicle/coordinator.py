@@ -473,6 +473,10 @@ class BydDataUpdateCoordinator(DataUpdateCoordinator[VehicleSnapshot]):
         self._realtime_endpoint_unsupported: bool = False
         self._energy_supported: bool | None = None
         self._charge_session_started_at: datetime | None = None
+        self._charge_session_start_soc: float | None = None
+        self._last_mqtt_push_at: datetime | None = None
+        self._last_successful_fetch_at: datetime | None = None
+        self._consecutive_fetch_failures: int = 0
         # ``getEnergyConsumption`` returns a payload but with
         # ``nearestEnergyConsumption.*Distribution`` always ``"--"`` on
         # several VINs (notably Sealion 7 EU).  Treat as a separate flag
@@ -489,6 +493,7 @@ class BydDataUpdateCoordinator(DataUpdateCoordinator[VehicleSnapshot]):
     def _async_handle_state_push(self, snapshot: VehicleSnapshot) -> None:
         """Update from a state-engine push and reset next poll from this update."""
         previous_snapshot = self.data
+        self._last_mqtt_push_at = datetime.now(tz=UTC)
         self._schedule_hvac_final_reconcile_if_needed(previous_snapshot, snapshot)
         self._track_charge_session(previous_snapshot, snapshot)
 
@@ -595,6 +600,23 @@ class BydDataUpdateCoordinator(DataUpdateCoordinator[VehicleSnapshot]):
     @property
     def vehicle(self) -> Vehicle:
         return self._vehicle
+
+    async def async_force_poll_now(self) -> None:
+        """Force a fresh fetch of realtime + charging + GPS in sequence.
+
+        Intended for use immediately after an external state change
+        (plug-in, key fob press, etc.) when waiting for the next scheduled
+        poll would be too slow.  Caller should await this and then read
+        the freshly-updated entity states.
+        """
+        try:
+            await self.async_fetch_realtime()
+        except Exception as exc:  # noqa: BLE001
+            _LOGGER.warning("force_poll: realtime failed vin=%s err=%s", self._vin, exc)
+        try:
+            await self.async_fetch_charging()
+        except Exception as exc:  # noqa: BLE001
+            _LOGGER.warning("force_poll: charging failed vin=%s err=%s", self._vin, exc)
 
     async def async_refresh_firmware_metadata(self) -> str | None:
         """Refresh ``vehicle.tbox_version`` from the cloud vehicle list.
@@ -725,10 +747,12 @@ class BydDataUpdateCoordinator(DataUpdateCoordinator[VehicleSnapshot]):
                 )
                 self._realtime_endpoint_unsupported = True
         except _RECOVERABLE_ERRORS as exc:
+            self._consecutive_fetch_failures += 1
             _LOGGER.warning(
-                "Realtime fetch failed: vin=%s, error=%s",
+                "Realtime fetch failed: vin=%s, error=%s, consecutive_failures=%d",
                 self._vin,
                 exc,
+                self._consecutive_fetch_failures,
             )
 
         # --- HVAC (conditional) ---
@@ -776,6 +800,11 @@ class BydDataUpdateCoordinator(DataUpdateCoordinator[VehicleSnapshot]):
             snapshot.hvac is not None,
         )
 
+        # Health tracking: a real realtime payload counts as a success.
+        if snapshot.realtime is not None:
+            self._last_successful_fetch_at = datetime.now(tz=UTC)
+            self._consecutive_fetch_failures = 0
+
         # Adapt next poll interval based on the just-observed state.
         self._apply_adaptive_interval(snapshot)
         self._track_charge_session(previous_snapshot, snapshot)
@@ -786,6 +815,11 @@ class BydDataUpdateCoordinator(DataUpdateCoordinator[VehicleSnapshot]):
     # Adaptive polling
     # ------------------------------------------------------------------
 
+    # MQTT push within this window suppresses HTTP polling further —
+    # the car is actively pushing state, so HTTP is redundant.
+    _MQTT_AWARE_WINDOW = timedelta(minutes=10)
+    _MQTT_AWARE_BONUS = 2  # additional multiplier when push is recent
+
     def _compute_adaptive_interval(self, snapshot: VehicleSnapshot) -> timedelta:
         """Return the next telemetry interval based on the current snapshot.
 
@@ -794,34 +828,45 @@ class BydDataUpdateCoordinator(DataUpdateCoordinator[VehicleSnapshot]):
           * 2×   — plugged & waiting (schedule pending or connector locked)
           * 4×   — online idle (cable in, no schedule, no charge)
           * 8×   — offline / sleeping
+
+        An additional 2× multiplier is applied when an MQTT push has
+        arrived within :attr:`_MQTT_AWARE_WINDOW` — when the car is
+        actively notifying us, HTTP polling is redundant.
         """
         base = self._fixed_interval
         if snapshot is None or snapshot.realtime is None:
-            return base * 4
+            multiplier = 4
+        else:
+            realtime = snapshot.realtime
+            charging = snapshot.charging
+            if charging is not None and getattr(charging, "charging_state", None) == 1:
+                multiplier = 1
+            elif getattr(realtime, "is_charging", None) is True:
+                multiplier = 1
+            elif getattr(realtime, "is_vehicle_on", None) is True:
+                multiplier = 1
+            elif charging is not None and (
+                getattr(charging, "wait_status", None) == 1
+                or getattr(charging, "charging_state", None) == 9
+                or getattr(charging, "connect_state", None) == 1
+            ):
+                multiplier = 2
+            elif getattr(realtime, "is_online", None) is False:
+                multiplier = 8
+            else:
+                multiplier = 4
 
-        realtime = snapshot.realtime
-        charging = snapshot.charging
+        # MQTT-aware bonus: only when not in the 1× (active) bucket — we
+        # want fresh HTTP data while charging/driving even if push is
+        # flowing.  For all idle/waiting states, trust the push channel.
+        if (
+            multiplier > 1
+            and self._last_mqtt_push_at is not None
+            and datetime.now(tz=UTC) - self._last_mqtt_push_at < self._MQTT_AWARE_WINDOW
+        ):
+            multiplier *= self._MQTT_AWARE_BONUS
 
-        if charging is not None and getattr(charging, "charging_state", None) == 1:
-            return base
-        if getattr(realtime, "is_charging", None) is True:
-            return base
-
-        if getattr(realtime, "is_vehicle_on", None) is True:
-            return base
-
-        if charging is not None:
-            if getattr(charging, "wait_status", None) == 1:
-                return base * 2
-            if getattr(charging, "charging_state", None) == 9:
-                return base * 2
-            if getattr(charging, "connect_state", None) == 1:
-                return base * 2
-
-        if getattr(realtime, "is_online", None) is False:
-            return base * 8
-
-        return base * 4
+        return base * multiplier
 
     def _apply_adaptive_interval(self, snapshot: VehicleSnapshot) -> None:
         """Update ``update_interval`` from the adaptive policy."""
@@ -843,17 +888,31 @@ class BydDataUpdateCoordinator(DataUpdateCoordinator[VehicleSnapshot]):
         previous: VehicleSnapshot | None,
         current: VehicleSnapshot,
     ) -> None:
-        """Record the timestamp when ``charging_state`` transitions to 1."""
+        """Record the timestamp + start SoC when ``charging_state`` -> 1."""
 
         def _is_charging(snap: VehicleSnapshot | None) -> bool:
             if snap is None or snap.charging is None:
                 return False
             return getattr(snap.charging, "charging_state", None) == 1
 
+        def _current_soc(snap: VehicleSnapshot | None) -> float | None:
+            if snap is None:
+                return None
+            if snap.charging is not None:
+                soc = getattr(snap.charging, "soc", None)
+                if soc is not None:
+                    return float(soc)
+            if snap.realtime is not None:
+                soc = getattr(snap.realtime, "elec_percent", None)
+                if soc is not None:
+                    return float(soc)
+            return None
+
         was = _is_charging(previous)
         now_charging = _is_charging(current)
         if now_charging and not was:
             self._charge_session_started_at = datetime.now(tz=UTC)
+            self._charge_session_start_soc = _current_soc(current)
         elif not now_charging and was:
             # Keep the timestamp on the way out so automations can read
             # "last charge started at" — only clear on a fresh disconnect
@@ -864,11 +923,87 @@ class BydDataUpdateCoordinator(DataUpdateCoordinator[VehicleSnapshot]):
             )
             if connect_state == 0:
                 self._charge_session_started_at = None
+                self._charge_session_start_soc = None
 
     @property
     def charge_session_started_at(self) -> datetime | None:
         """UTC timestamp of the latest ``charging_state==1`` transition."""
         return self._charge_session_started_at
+
+    @property
+    def charge_session_duration_minutes(self) -> int | None:
+        """Minutes elapsed since the last charge session began."""
+        if self._charge_session_started_at is None:
+            return None
+        delta = datetime.now(tz=UTC) - self._charge_session_started_at
+        return int(delta.total_seconds() // 60)
+
+    @property
+    def charge_session_soc_added(self) -> float | None:
+        """SoC percentage points gained since the session started."""
+        if self._charge_session_start_soc is None or self.data is None:
+            return None
+        current_soc = None
+        if self.data.charging is not None:
+            current_soc = getattr(self.data.charging, "soc", None)
+        if current_soc is None and self.data.realtime is not None:
+            current_soc = getattr(self.data.realtime, "elec_percent", None)
+        if current_soc is None:
+            return None
+        delta = float(current_soc) - self._charge_session_start_soc
+        return round(max(0.0, delta), 1)
+
+    @property
+    def time_until_full_minutes(self) -> int | None:
+        """Estimated minutes to reach 100% at the current charge rate.
+
+        Returns ``None`` when not actively charging or when the AC charge
+        power is too low to extrapolate reliably.
+        """
+        if self.data is None or self.data.charging is None:
+            return None
+        if getattr(self.data.charging, "charging_state", None) != 1:
+            return None
+        # SoC remaining
+        soc = getattr(self.data.charging, "soc", None)
+        if soc is None and self.data.realtime is not None:
+            soc = getattr(self.data.realtime, "elec_percent", None)
+        if soc is None or soc >= 100:
+            return None
+        remaining_soc = 100.0 - float(soc)
+        # AC charge power (W) from realtime.gl when available
+        power_w = None
+        if self.data.realtime is not None:
+            gl = getattr(self.data.realtime, "gl", None)
+            if gl is not None:
+                power_w = abs(float(gl))
+        if power_w is None or power_w < 500:
+            return None
+        # Battery capacity defaults to Sealion 7 Comfort 82.5 kWh.
+        # When pyBYD adds per-model capacity metadata, swap here.
+        battery_kwh = 82.5
+        kwh_remaining = battery_kwh * remaining_soc / 100.0
+        minutes = (kwh_remaining * 1000.0 / power_w) * 60.0
+        return int(minutes)
+
+    @property
+    def last_mqtt_push_at(self) -> datetime | None:
+        """Timestamp of the most recent MQTT state push."""
+        return self._last_mqtt_push_at
+
+    @property
+    def last_successful_fetch_at(self) -> datetime | None:
+        """Timestamp of the most recent successful HTTP fetch."""
+        return self._last_successful_fetch_at
+
+    @property
+    def is_cloud_responsive(self) -> bool:
+        """Whether the cloud has been responding recently.
+
+        Flips to ``False`` after 3 consecutive failed fetches and resets
+        to ``True`` on the next success.
+        """
+        return self._consecutive_fetch_failures < 3
 
     @property
     def effective_poll_interval_seconds(self) -> int:
