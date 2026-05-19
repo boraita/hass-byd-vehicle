@@ -9,6 +9,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from homeassistant.components.sensor import (
+    RestoreSensor,
     SensorDeviceClass,
     SensorEntity,
     SensorEntityDescription,
@@ -1336,11 +1337,15 @@ _TIRE_UNIT_MAP = {
 }
 
 
-class BydSensor(BydVehicleEntity, SensorEntity):
+class BydSensor(BydVehicleEntity, RestoreSensor):
     """Representation of a BYD vehicle sensor.
 
     All state is read from ``VehicleSnapshot`` sections via the
-    base-class ``_get_source_obj()`` helper. No local shadow state.
+    base-class ``_get_source_obj()`` helper. The ``_last_native_value``
+    cache (used by ``keep_previous_when_zero`` and friends) survives
+    restarts and config-entry reloads via :class:`RestoreSensor`, so a
+    transient sentinel payload right after a reload doesn't flip a
+    previously-known value (e.g. battery 98 %) back to ``unknown``.
     """
 
     _attr_has_entity_name = True
@@ -1366,6 +1371,24 @@ class BydSensor(BydVehicleEntity, SensorEntity):
         if description.entity_registry_enabled_default is not False:
             if self._resolve_validated_value() is None:
                 self._attr_entity_registry_enabled_default = False
+
+    async def async_added_to_hass(self) -> None:
+        """Restore last known native value before the coordinator binds.
+
+        The restored value seeds ``_last_native_value`` so that the first
+        post-restart coordinator update can still fall through to the
+        previous value when the cloud returns a sentinel payload.
+        """
+        await super().async_added_to_hass()
+        if self.entity_description.validator_fn is None:
+            return
+        last = await self.async_get_last_sensor_data()
+        if last is None:
+            return
+        restored = last.native_value
+        if restored is None:
+            return
+        self._last_native_value = restored
 
     # ------------------------------------------------------------------
     # Helpers
