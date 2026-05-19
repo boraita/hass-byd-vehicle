@@ -1101,6 +1101,60 @@ class BydDataUpdateCoordinator(DataUpdateCoordinator[VehicleSnapshot]):
             )
             self.hass.async_create_task(self._async_post_plug_refresh())
 
+        self._maybe_fire_capability_changes(previous, current)
+
+    def _maybe_fire_capability_changes(
+        self,
+        previous: VehicleSnapshot | None,
+        current: VehicleSnapshot,
+    ) -> None:
+        """Fire HA events when ``vehicleFunLearnInfo`` flags transition.
+
+        Every realtime payload carries the capability dict.  When a flag
+        changes value (e.g. ``otaUpgrade`` goes 0 → 1 announcing a new
+        OTA, or ``sentryStatusLearnInfo`` flips after the user toggles
+        sentry from the car) we fire one event per flag so automations
+        can react without polling the diagnostic sensor.
+
+        Event: ``byd_vehicle_capability_changed`` with
+        ``{vin, flag, previous_value, new_value}``.
+        """
+
+        def _flags(snap: VehicleSnapshot | None) -> dict[str, Any]:
+            if snap is None or snap.vehicle is None:
+                return {}
+            raw = getattr(snap.vehicle, "raw", None)
+            if not isinstance(raw, dict):
+                return {}
+            funlearn = raw.get("vehicleFunLearnInfo")
+            return funlearn if isinstance(funlearn, dict) else {}
+
+        prev_flags = _flags(previous)
+        new_flags = _flags(current)
+        if not prev_flags or not new_flags:
+            return
+
+        for flag, new_value in new_flags.items():
+            prev_value = prev_flags.get(flag)
+            if prev_value == new_value:
+                continue
+            self.hass.bus.async_fire(
+                "byd_vehicle_capability_changed",
+                {
+                    "vin": self._vin,
+                    "flag": flag,
+                    "previous_value": prev_value,
+                    "new_value": new_value,
+                },
+            )
+            _LOGGER.debug(
+                "Capability change: vin=%s %s: %s -> %s",
+                self._vin[-6:],
+                flag,
+                prev_value,
+                new_value,
+            )
+
     async def _async_post_ota_refresh(self) -> None:
         """Background: refresh charging + firmware after OTA completion."""
         try:
