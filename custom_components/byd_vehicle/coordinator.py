@@ -505,6 +505,7 @@ class BydDataUpdateCoordinator(DataUpdateCoordinator[VehicleSnapshot]):
         self._schedule_hvac_final_reconcile_if_needed(previous_snapshot, snapshot)
         self._track_charge_session(previous_snapshot, snapshot)
         self._maybe_fire_phase_changed(previous_snapshot, snapshot)
+        self._maybe_handle_state_transitions(previous_snapshot, snapshot)
 
         previous_timestamp = None
         if previous_snapshot is not None and previous_snapshot.realtime is not None:
@@ -899,6 +900,7 @@ class BydDataUpdateCoordinator(DataUpdateCoordinator[VehicleSnapshot]):
         self._apply_adaptive_interval(snapshot)
         self._track_charge_session(previous_snapshot, snapshot)
         self._maybe_fire_phase_changed(previous_snapshot, snapshot)
+        self._maybe_handle_state_transitions(previous_snapshot, snapshot)
 
         return snapshot
 
@@ -1033,6 +1035,89 @@ class BydDataUpdateCoordinator(DataUpdateCoordinator[VehicleSnapshot]):
                 return "charge_complete"
             return "plugged_idle"
         return "unknown"
+
+    def _maybe_handle_state_transitions(
+        self,
+        previous: VehicleSnapshot | None,
+        current: VehicleSnapshot,
+    ) -> None:
+        """React to ad-hoc state transitions by scheduling targeted refreshes.
+
+        - **OTA done** (upgrade_status on → off): the next regular poll won't
+          fetch the charging snapshot or firmware metadata for several
+          minutes, so the user sees stale values right after the OTA. Force
+          both immediately.
+        - **Plug-in** (plug off → on): same problem — charging state lives on
+          a separate endpoint that the regular poll doesn't hit. The user
+          wants ``charge_session_phase`` to flip to ``plugged_idle`` within
+          seconds of plugging in, not minutes.
+
+        Refreshes are fire-and-forget background tasks so we don't block
+        the main update path. They use ``async_create_task`` so failures
+        are isolated and logged but don't propagate.
+        """
+        if previous is None:
+            return
+
+        def _ota_active(snap: VehicleSnapshot | None) -> bool | None:
+            if snap is None or snap.realtime is None:
+                return None
+            val = getattr(snap.realtime, "upgrade_status", None)
+            if val is None:
+                return None
+            try:
+                return int(val) > 0
+            except (TypeError, ValueError):
+                return None
+
+        def _plug_connected(snap: VehicleSnapshot | None) -> bool | None:
+            if snap is None:
+                return None
+            if snap.charging is not None:
+                state = getattr(snap.charging, "connect_state", None)
+                if state is not None:
+                    return int(state) > 0
+            if snap.realtime is not None:
+                state = getattr(snap.realtime, "connect_state", None)
+                if state is not None:
+                    return int(state) > 0
+            return None
+
+        prev_ota = _ota_active(previous)
+        new_ota = _ota_active(current)
+        if prev_ota is True and new_ota is False:
+            _LOGGER.info(
+                "OTA finished on vin=%s — refreshing charging + firmware",
+                self._vin[-6:],
+            )
+            self.hass.async_create_task(self._async_post_ota_refresh())
+
+        prev_plug = _plug_connected(previous)
+        new_plug = _plug_connected(current)
+        if prev_plug is False and new_plug is True:
+            _LOGGER.info(
+                "Plug-in detected on vin=%s — refreshing charging snapshot",
+                self._vin[-6:],
+            )
+            self.hass.async_create_task(self._async_post_plug_refresh())
+
+    async def _async_post_ota_refresh(self) -> None:
+        """Background: refresh charging + firmware after OTA completion."""
+        try:
+            await self.async_fetch_charging()
+        except Exception as exc:  # noqa: BLE001
+            _LOGGER.warning("post-OTA charging refresh failed vin=%s err=%s", self._vin, exc)
+        try:
+            await self.async_refresh_firmware_metadata()
+        except Exception as exc:  # noqa: BLE001
+            _LOGGER.warning("post-OTA firmware refresh failed vin=%s err=%s", self._vin, exc)
+
+    async def _async_post_plug_refresh(self) -> None:
+        """Background: refresh charging snapshot after plug detected."""
+        try:
+            await self.async_fetch_charging()
+        except Exception as exc:  # noqa: BLE001
+            _LOGGER.warning("post-plug charging refresh failed vin=%s err=%s", self._vin, exc)
 
     def _maybe_fire_phase_changed(
         self,

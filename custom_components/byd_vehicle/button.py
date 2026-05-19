@@ -175,9 +175,16 @@ class BydForcePollButton(BydVehicleEntity, ButtonEntity):
         self._attr_unique_id = f"{vin}_button_force_poll"
 
     async def async_press(self) -> None:
-        """Force-refresh all coordinators for this vehicle."""
+        """Force-refresh all coordinators for this vehicle.
+
+        ``async_force_poll_now`` covers realtime + charging in one shot
+        (the regular coordinator refresh only does realtime), so a single
+        button press lands fresh data on every charging-related sensor
+        rather than leaving them stale until the next scheduled charging
+        poll several minutes later.
+        """
         try:
-            await self.coordinator.async_force_refresh()
+            await self.coordinator.async_force_poll_now()
             gps = self._gps_coordinator
             if gps is not None:
                 await gps.async_force_refresh()
