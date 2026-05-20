@@ -1269,6 +1269,23 @@ class BydDataUpdateCoordinator(DataUpdateCoordinator[VehicleSnapshot]):
         return round(max(0.0, delta), 1)
 
     @property
+    def charge_session_kwh_added(self) -> float | None:
+        """Approximate kWh delivered to the battery this session.
+
+        Derived from the SoC delta against the Sealion 7 Comfort
+        nameplate capacity (82.5 kWh).  Coarse but works for any
+        charging source — V2C, public AC, public DC — since the cloud
+        reports the same SoC field regardless of where the energy
+        came from.  When pyBYD adds per-model capacity metadata, swap
+        the constant here.
+        """
+        soc_added = self.charge_session_soc_added
+        if soc_added is None:
+            return None
+        battery_kwh = 82.5
+        return round(soc_added * battery_kwh / 100.0, 2)
+
+    @property
     def time_until_full_minutes(self) -> int | None:
         """Estimated minutes to reach 100% at the current charge rate.
 

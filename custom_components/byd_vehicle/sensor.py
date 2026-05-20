@@ -19,6 +19,7 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import (
     PERCENTAGE,
     EntityCategory,
+    UnitOfEnergy,
     UnitOfLength,
     UnitOfPower,
     UnitOfPressure,
@@ -653,6 +654,22 @@ SENSOR_DESCRIPTIONS: tuple[BydSensorDescription, ...] = (
         attr_key="charge_session_soc_added",
         native_unit_of_measurement=PERCENTAGE,
         icon="mdi:battery-arrow-up",
+        entity_registry_enabled_default=False,
+    ),
+    # Energy delivered to the battery this session, derived from the SoC
+    # delta times the Sealion 7 Comfort nameplate capacity (82.5 kWh).
+    # Works for any charging source — V2C, public AC, public DC — since
+    # the cloud reports the SoC field regardless of where the energy
+    # came from.  Coarse: rounding error is in the few-hundred-Wh range.
+    BydSensorDescription(
+        key="charge_session_kwh_added",
+        name="Charge session kWh added",
+        source="coordinator",
+        attr_key="charge_session_kwh_added",
+        native_unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
+        device_class=SensorDeviceClass.ENERGY,
+        state_class=SensorStateClass.TOTAL,
+        icon="mdi:lightning-bolt-circle",
         entity_registry_enabled_default=False,
     ),
     BydSensorDescription(
