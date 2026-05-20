@@ -1412,6 +1412,36 @@ SENSOR_DESCRIPTIONS: tuple[BydSensorDescription, ...] = (
         entity_registry_enabled_default=False,
         entity_category=EntityCategory.DIAGNOSTIC,
     ),
+    BydSensorDescription(
+        key="charge_sessions",
+        name="Charge sessions (last 10)",
+        source="coordinator",
+        value_fn=lambda c: (
+            len(c.charge_sessions) if c is not None and hasattr(c, "charge_sessions") else 0
+        ),
+        state_attrs_fn=lambda c: (
+            {"sessions": c.charge_sessions}
+            if c is not None and hasattr(c, "charge_sessions")
+            else {}
+        ),
+        icon="mdi:history",
+        entity_registry_enabled_default=False,
+        entity_category=EntityCategory.DIAGNOSTIC,
+    ),
+    BydSensorDescription(
+        key="realtime_raw",
+        name="Realtime raw (diagnostic)",
+        source="realtime",
+        value_fn=lambda v: (
+            len(v.raw) if v is not None and isinstance(getattr(v, "raw", None), dict) else None
+        ),
+        state_attrs_fn=lambda v: (
+            v.raw if v is not None and isinstance(getattr(v, "raw", None), dict) else {}
+        ),
+        icon="mdi:database-search",
+        entity_registry_enabled_default=False,
+        entity_category=EntityCategory.DIAGNOSTIC,
+    ),
 )
 
 

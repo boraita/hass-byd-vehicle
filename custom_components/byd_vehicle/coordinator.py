@@ -475,6 +475,7 @@ class BydDataUpdateCoordinator(DataUpdateCoordinator[VehicleSnapshot]):
         self._charge_session_started_at: datetime | None = None
         self._charge_session_start_soc: float | None = None
         self._charge_curve: list[dict[str, Any]] = []
+        self._charge_sessions: list[dict[str, Any]] = []
         self._last_mqtt_push_at: datetime | None = None
         self._last_successful_fetch_at: datetime | None = None
         self._consecutive_fetch_failures: int = 0
@@ -1231,8 +1232,7 @@ class BydDataUpdateCoordinator(DataUpdateCoordinator[VehicleSnapshot]):
             self._charge_session_start_soc = _current_soc(current)
             self._charge_curve = []
         elif not now_charging and was:
-            # Keep the timestamp on the way out so automations can read
-            # "last charge started at" — only clear on a fresh disconnect
+            self._record_finished_session(current, _current_soc(current))
             connect_state = (
                 getattr(current.charging, "connect_state", None)
                 if current.charging
@@ -1267,6 +1267,41 @@ class BydDataUpdateCoordinator(DataUpdateCoordinator[VehicleSnapshot]):
     def charge_curve(self) -> list[dict[str, Any]]:
         """Timeline of (timestamp, SoC, kW) samples for the current session."""
         return list(self._charge_curve)
+
+    @property
+    def charge_sessions(self) -> list[dict[str, Any]]:
+        """Summaries of the last completed charging sessions (max 10)."""
+        return list(self._charge_sessions)
+
+    def _record_finished_session(
+        self, current: VehicleSnapshot, end_soc: float | None
+    ) -> None:
+        """Append a finished-session summary to the rolling history."""
+        if self._charge_session_started_at is None:
+            return
+        started = self._charge_session_started_at
+        duration_min = int((datetime.now(tz=UTC) - started).total_seconds() // 60)
+        start_soc = self._charge_session_start_soc
+        soc_added = None
+        kwh_added = None
+        if start_soc is not None and end_soc is not None:
+            soc_added = round(max(0.0, float(end_soc) - float(start_soc)), 1)
+            kwh_added = round(soc_added * 82.5 / 100.0, 2)
+        powers = [s.get("kw") for s in self._charge_curve if s.get("kw") is not None]
+        avg_kw = round(sum(powers) / len(powers), 2) if powers else None
+        self._charge_sessions.append({
+            "started_at": started.isoformat(),
+            "ended_at": datetime.now(tz=UTC).isoformat(),
+            "duration_minutes": duration_min,
+            "start_soc": start_soc,
+            "end_soc": end_soc,
+            "soc_added": soc_added,
+            "kwh_added": kwh_added,
+            "avg_kw": avg_kw,
+            "samples": len(self._charge_curve),
+        })
+        if len(self._charge_sessions) > 10:
+            self._charge_sessions = self._charge_sessions[-10:]
 
     @property
     def charge_session_duration_minutes(self) -> int | None:
