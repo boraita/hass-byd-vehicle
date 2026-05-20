@@ -1303,6 +1303,115 @@ SENSOR_DESCRIPTIONS: tuple[BydSensorDescription, ...] = (
         entity_registry_enabled_default=False,
         entity_category=EntityCategory.DIAGNOSTIC,
     ),
+    BydSensorDescription(
+        key="power_gear",
+        name="Power gear",
+        source="realtime",
+        value_fn=lambda obj: (
+            {1: "off", 3: "on"}.get(
+                getattr(getattr(obj, "power_gear", None), "value", None)
+            )
+            if obj is not None
+            else None
+        ),
+        device_class=SensorDeviceClass.ENUM,
+        options=["off", "on"],
+        icon="mdi:car-shift-pattern",
+        entity_registry_enabled_default=False,
+        entity_category=EntityCategory.DIAGNOSTIC,
+    ),
+    BydSensorDescription(
+        key="oil_pressure_system",
+        name="Oil pressure system",
+        source="realtime",
+        attr_key="oil_pressure_system",
+        icon="mdi:oil",
+        entity_registry_enabled_default=False,
+        entity_category=EntityCategory.DIAGNOSTIC,
+    ),
+    BydSensorDescription(
+        key="booking_charge_state",
+        name="Booking charge state",
+        source="realtime",
+        attr_key="booking_charge_state",
+        icon="mdi:calendar-clock",
+        entity_registry_enabled_default=False,
+        entity_category=EntityCategory.DIAGNOSTIC,
+    ),
+    BydSensorDescription(
+        key="booking_charging_hour",
+        name="Booking charging hour",
+        source="realtime",
+        attr_key="booking_charging_hour",
+        icon="mdi:clock-outline",
+        entity_registry_enabled_default=False,
+        entity_category=EntityCategory.DIAGNOSTIC,
+    ),
+    BydSensorDescription(
+        key="booking_charging_minute",
+        name="Booking charging minute",
+        source="realtime",
+        attr_key="booking_charging_minute",
+        icon="mdi:clock-outline",
+        entity_registry_enabled_default=False,
+        entity_category=EntityCategory.DIAGNOSTIC,
+    ),
+    BydSensorDescription(
+        key="rear_left_third_seat_heating",
+        name="Rear left 3rd-row seat heating",
+        source="realtime",
+        value_fn=lambda obj: (
+            getattr(getattr(obj, "lr_third_heat_state", None), "name", None)
+            if obj is not None
+            else None
+        ),
+        icon="mdi:car-seat-heater",
+        entity_registry_enabled_default=False,
+        entity_category=EntityCategory.DIAGNOSTIC,
+    ),
+    BydSensorDescription(
+        key="rear_right_third_seat_heating",
+        name="Rear right 3rd-row seat heating",
+        source="realtime",
+        value_fn=lambda obj: (
+            getattr(getattr(obj, "rr_third_heat_state", None), "name", None)
+            if obj is not None
+            else None
+        ),
+        icon="mdi:car-seat-heater",
+        entity_registry_enabled_default=False,
+        entity_category=EntityCategory.DIAGNOSTIC,
+    ),
+    BydSensorDescription(
+        key="vehicle_raw",
+        name="Vehicle raw (diagnostic)",
+        source="vehicle",
+        value_fn=lambda v: (
+            len(v.raw) if v is not None and isinstance(getattr(v, "raw", None), dict) else None
+        ),
+        state_attrs_fn=lambda v: (
+            v.raw if v is not None and isinstance(getattr(v, "raw", None), dict) else {}
+        ),
+        icon="mdi:database-search",
+        entity_registry_enabled_default=False,
+        entity_category=EntityCategory.DIAGNOSTIC,
+    ),
+    BydSensorDescription(
+        key="charge_curve",
+        name="Charge curve",
+        source="coordinator",
+        value_fn=lambda c: (
+            len(c.charge_curve) if c is not None and hasattr(c, "charge_curve") else 0
+        ),
+        state_attrs_fn=lambda c: (
+            {"samples": c.charge_curve[-50:]}
+            if c is not None and hasattr(c, "charge_curve")
+            else {}
+        ),
+        icon="mdi:chart-line",
+        entity_registry_enabled_default=False,
+        entity_category=EntityCategory.DIAGNOSTIC,
+    ),
 )
 
 

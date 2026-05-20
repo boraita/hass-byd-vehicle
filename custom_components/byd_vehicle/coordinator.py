@@ -474,6 +474,7 @@ class BydDataUpdateCoordinator(DataUpdateCoordinator[VehicleSnapshot]):
         self._energy_supported: bool | None = None
         self._charge_session_started_at: datetime | None = None
         self._charge_session_start_soc: float | None = None
+        self._charge_curve: list[dict[str, Any]] = []
         self._last_mqtt_push_at: datetime | None = None
         self._last_successful_fetch_at: datetime | None = None
         self._consecutive_fetch_failures: int = 0
@@ -1228,6 +1229,7 @@ class BydDataUpdateCoordinator(DataUpdateCoordinator[VehicleSnapshot]):
         if now_charging and not was:
             self._charge_session_started_at = datetime.now(tz=UTC)
             self._charge_session_start_soc = _current_soc(current)
+            self._charge_curve = []
         elif not now_charging and was:
             # Keep the timestamp on the way out so automations can read
             # "last charge started at" — only clear on a fresh disconnect
@@ -1240,10 +1242,31 @@ class BydDataUpdateCoordinator(DataUpdateCoordinator[VehicleSnapshot]):
                 self._charge_session_started_at = None
                 self._charge_session_start_soc = None
 
+        if now_charging:
+            soc = _current_soc(current)
+            power = None
+            if current.realtime is not None:
+                gl = getattr(current.realtime, "gl", None)
+                if gl is not None:
+                    power = round(abs(float(gl)) / 1000.0, 2)
+            if soc is not None:
+                self._charge_curve.append({
+                    "t": datetime.now(tz=UTC).isoformat(),
+                    "soc": soc,
+                    "kw": power,
+                })
+                if len(self._charge_curve) > 200:
+                    self._charge_curve = self._charge_curve[-200:]
+
     @property
     def charge_session_started_at(self) -> datetime | None:
         """UTC timestamp of the latest ``charging_state==1`` transition."""
         return self._charge_session_started_at
+
+    @property
+    def charge_curve(self) -> list[dict[str, Any]]:
+        """Timeline of (timestamp, SoC, kW) samples for the current session."""
+        return list(self._charge_curve)
 
     @property
     def charge_session_duration_minutes(self) -> int | None:
