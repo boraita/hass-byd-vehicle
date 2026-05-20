@@ -665,6 +665,7 @@ SENSOR_DESCRIPTIONS: tuple[BydSensorDescription, ...] = (
         native_unit_of_measurement=UnitOfTime.MINUTES,
         icon="mdi:timer",
         entity_registry_enabled_default=False,
+        validator_fn=keep_previous_when_zero,
     ),
     BydSensorDescription(
         key="charge_session_soc_added",
@@ -674,12 +675,8 @@ SENSOR_DESCRIPTIONS: tuple[BydSensorDescription, ...] = (
         native_unit_of_measurement=PERCENTAGE,
         icon="mdi:battery-arrow-up",
         entity_registry_enabled_default=False,
+        validator_fn=keep_previous_when_zero,
     ),
-    # Energy delivered to the battery this session, derived from the SoC
-    # delta times the Sealion 7 Comfort nameplate capacity (82.5 kWh).
-    # Works for any charging source — V2C, public AC, public DC — since
-    # the cloud reports the SoC field regardless of where the energy
-    # came from.  Coarse: rounding error is in the few-hundred-Wh range.
     BydSensorDescription(
         key="charge_session_kwh_added",
         name="Charge session kWh added",
@@ -690,6 +687,7 @@ SENSOR_DESCRIPTIONS: tuple[BydSensorDescription, ...] = (
         state_class=SensorStateClass.TOTAL,
         icon="mdi:lightning-bolt-circle",
         entity_registry_enabled_default=False,
+        validator_fn=keep_previous_when_zero,
     ),
     BydSensorDescription(
         key="time_until_full",
