@@ -1730,6 +1730,71 @@ SENSOR_DESCRIPTIONS: tuple[BydSensorDescription, ...] = (
         entity_registry_enabled_default=False,
         entity_category=EntityCategory.DIAGNOSTIC,
     ),
+    BydSensorDescription(
+        key="gps_speed",
+        name="GPS speed",
+        source="gps",
+        attr_key="speed",
+        native_unit_of_measurement=UnitOfSpeed.KILOMETERS_PER_HOUR,
+        device_class=SensorDeviceClass.SPEED,
+        state_class=SensorStateClass.MEASUREMENT,
+        icon="mdi:speedometer",
+        entity_registry_enabled_default=False,
+        entity_category=EntityCategory.DIAGNOSTIC,
+    ),
+    BydSensorDescription(
+        key="gps_heading",
+        name="GPS heading",
+        source="gps",
+        attr_key="direction",
+        native_unit_of_measurement="°",
+        state_class=SensorStateClass.MEASUREMENT,
+        icon="mdi:compass",
+        entity_registry_enabled_default=False,
+        entity_category=EntityCategory.DIAGNOSTIC,
+    ),
+    BydSensorDescription(
+        key="license_plate",
+        name="License plate",
+        source="vehicle",
+        attr_key="auto_plate",
+        icon="mdi:card-text",
+        entity_registry_enabled_default=False,
+        entity_category=EntityCategory.DIAGNOSTIC,
+    ),
+    BydSensorDescription(
+        key="vehicle_activation_date",
+        name="Vehicle activation date",
+        source="vehicle",
+        attr_key="auto_bought_time",
+        device_class=SensorDeviceClass.TIMESTAMP,
+        icon="mdi:calendar-check",
+        entity_registry_enabled_default=False,
+        entity_category=EntityCategory.DIAGNOSTIC,
+    ),
+    BydSensorDescription(
+        key="cloud_activation_date",
+        name="Cloud account activation",
+        source="vehicle",
+        attr_key="yun_active_time",
+        device_class=SensorDeviceClass.TIMESTAMP,
+        icon="mdi:cloud-check",
+        entity_registry_enabled_default=False,
+        entity_category=EntityCategory.DIAGNOSTIC,
+    ),
+    BydSensorDescription(
+        key="car_photo_url",
+        name="Car photo URL",
+        source="vehicle",
+        value_fn=lambda v: (
+            (v.raw.get("cfPic") or {}).get("picMainUrl")
+            if v is not None and isinstance(getattr(v, "raw", None), dict)
+            else None
+        ),
+        icon="mdi:image",
+        entity_registry_enabled_default=False,
+        entity_category=EntityCategory.DIAGNOSTIC,
+    ),
 )
 
 
