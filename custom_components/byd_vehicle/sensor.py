@@ -1242,6 +1242,67 @@ SENSOR_DESCRIPTIONS: tuple[BydSensorDescription, ...] = (
         entity_registry_enabled_default=False,
         entity_category=EntityCategory.DIAGNOSTIC,
     ),
+    # =============================================
+    # Realtime: previously-unparsed extras
+    # =============================================
+    # HVAC target temperature the user set inside the car.  Useful for
+    # automations that want to detect manual climate changes vs. our
+    # remote-control invocations.
+    BydSensorDescription(
+        key="main_setting_temp",
+        name="HVAC target temperature",
+        source="realtime",
+        attr_key="main_setting_temp_new",
+        native_unit_of_measurement=UnitOfTemperature.CELSIUS,
+        device_class=SensorDeviceClass.TEMPERATURE,
+        state_class=SensorStateClass.MEASUREMENT,
+        icon="mdi:thermostat",
+        entity_registry_enabled_default=False,
+    ),
+    # Air recirculation mode (external = fresh air, internal = recirculate).
+    # The HVAC component already exposes this indirectly but having it as a
+    # standalone sensor lets automations key off it (e.g. switch to
+    # recirculate when AQI drops outside).
+    BydSensorDescription(
+        key="air_run_state",
+        name="Air recirculation",
+        source="realtime",
+        value_fn=lambda obj: (
+            {1: "external", 2: "internal"}.get(
+                getattr(getattr(obj, "air_run_state", None), "value", None)
+            )
+            if obj is not None
+            else None
+        ),
+        device_class=SensorDeviceClass.ENUM,
+        options=["external", "internal"],
+        icon="mdi:air-filter",
+        entity_registry_enabled_default=False,
+    ),
+    # Battery preheating state during DC charging.  Distinct from
+    # `battery_heating` binary which only reports on/off — this exposes
+    # the more granular state code reported by the car.
+    BydSensorDescription(
+        key="charge_heat_state",
+        name="Charge heat state",
+        source="realtime",
+        attr_key="charge_heat_state",
+        icon="mdi:radiator",
+        entity_registry_enabled_default=False,
+        entity_category=EntityCategory.DIAGNOSTIC,
+    ),
+    # Equivalent consumption — BYD's combined kWh/100km figure that
+    # mixes electric + (for PHEVs) fuel into a single value.  Already
+    # parsed by pyBYD; just wasn't surfaced as a sensor.
+    BydSensorDescription(
+        key="eq_consumption_raw",
+        name="Equivalent consumption (raw)",
+        source="realtime",
+        attr_key="eq_consumption",
+        icon="mdi:lightning-bolt-outline",
+        entity_registry_enabled_default=False,
+        entity_category=EntityCategory.DIAGNOSTIC,
+    ),
 )
 
 
