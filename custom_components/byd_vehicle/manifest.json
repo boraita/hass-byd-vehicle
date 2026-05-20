@@ -9,7 +9,7 @@
   "iot_class": "cloud_polling",
   "issue_tracker": "https://github.com/jkaberg/hass-byd-vehicle/issues",
   "requirements": [
-    "pybyd @ git+https://github.com/boraita/pyBYD@feat/sealion-17-defrost-wiper"
+    "pybyd @ git+https://github.com/boraita/pyBYD@feat/sealion-21-cleanup-and-mapping"
   ],
-  "version": "0.0.80-sealion.20"
+  "version": "0.0.80-sealion.21"
 }

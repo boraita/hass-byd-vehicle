@@ -28,8 +28,6 @@ class BydButtonDescription(ButtonEntityDescription):
     """Lambda returning the capability coroutine to execute."""
     capability_key: str
     """Normalized pyBYD capability flag name."""
-    bypass_capability_gate: bool = False
-    """Expose the button even when the capability flag is missing/False."""
 
 
 BUTTON_DESCRIPTIONS: tuple[BydButtonDescription, ...] = (
@@ -76,38 +74,6 @@ BUTTON_DESCRIPTIONS: tuple[BydButtonDescription, ...] = (
         capability_key="close_trunk",
         car_command=lambda car: car.trunk.close(),
     ),
-    BydButtonDescription(
-        key="start_defrost",
-        name="Start defrost",
-        icon="mdi:car-defrost-front",
-        capability_key="start_defrost",
-        bypass_capability_gate=True,
-        car_command=lambda car: car.defrost.start(),
-    ),
-    BydButtonDescription(
-        key="stop_defrost",
-        name="Stop defrost",
-        icon="mdi:car-defrost-front",
-        capability_key="stop_defrost",
-        bypass_capability_gate=True,
-        car_command=lambda car: car.defrost.stop(),
-    ),
-    BydButtonDescription(
-        key="start_wiper_heat",
-        name="Start heated wipers",
-        icon="mdi:wiper",
-        capability_key="start_wiper_heat",
-        bypass_capability_gate=True,
-        car_command=lambda car: car.wiper_heat.start(),
-    ),
-    BydButtonDescription(
-        key="stop_wiper_heat",
-        name="Stop heated wipers",
-        icon="mdi:wiper",
-        capability_key="stop_wiper_heat",
-        bypass_capability_gate=True,
-        car_command=lambda car: car.wiper_heat.stop(),
-    ),
 )
 
 
@@ -130,9 +96,7 @@ async def async_setup_entry(
         entities.append(BydStartChargingButton(coordinator, vin, vehicle))
         entities.append(BydFetchEnergyButton(coordinator, vin, vehicle))
         for description in BUTTON_DESCRIPTIONS:
-            if not description.bypass_capability_gate and not coordinator.capability_available(
-                description.capability_key
-            ):
+            if not coordinator.capability_available(description.capability_key):
                 continue
             entities.append(BydButton(coordinator, vin, vehicle, description))
 

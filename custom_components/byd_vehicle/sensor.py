@@ -1487,6 +1487,75 @@ SENSOR_DESCRIPTIONS: tuple[BydSensorDescription, ...] = (
         entity_registry_enabled_default=False,
         entity_category=EntityCategory.DIAGNOSTIC,
     ),
+    BydSensorDescription(
+        key="config_version_at",
+        name="Config version at",
+        source="coordinator",
+        value_fn=lambda c: (
+            datetime.fromtimestamp(
+                getattr(c.car.capabilities, "raw", {}).get("configVersion"), tz=UTC
+            )
+            if c is not None
+            and getattr(c, "car", None) is not None
+            and getattr(c.car, "capabilities", None) is not None
+            and isinstance(getattr(c.car.capabilities, "raw", None), dict)
+            and isinstance(c.car.capabilities.raw.get("configVersion"), int)
+            and c.car.capabilities.raw.get("configVersion") > 0
+            else None
+        ),
+        device_class=SensorDeviceClass.TIMESTAMP,
+        icon="mdi:cog-clockwise",
+        entity_registry_enabled_default=False,
+        entity_category=EntityCategory.DIAGNOSTIC,
+    ),
+    BydSensorDescription(
+        key="charge_state_extended",
+        name="Charge state (extended)",
+        source="realtime",
+        attr_key="charge_state",
+        icon="mdi:battery-charging-outline",
+        entity_registry_enabled_default=False,
+        entity_category=EntityCategory.DIAGNOSTIC,
+    ),
+    BydSensorDescription(
+        key="light_stop_status",
+        name="Light stop status",
+        source="realtime",
+        value_fn=lambda obj: (
+            obj.raw.get("lightStopStatus")
+            if obj is not None and isinstance(getattr(obj, "raw", None), dict)
+            else None
+        ),
+        icon="mdi:car-traction-control",
+        entity_registry_enabled_default=False,
+        entity_category=EntityCategory.DIAGNOSTIC,
+    ),
+    BydSensorDescription(
+        key="forehold",
+        name="Forehold",
+        source="realtime",
+        value_fn=lambda obj: (
+            obj.raw.get("forehold")
+            if obj is not None and isinstance(getattr(obj, "raw", None), dict)
+            else None
+        ),
+        icon="mdi:car-cruise-control",
+        entity_registry_enabled_default=False,
+        entity_category=EntityCategory.DIAGNOSTIC,
+    ),
+    BydSensorDescription(
+        key="epb",
+        name="Electronic parking brake",
+        source="realtime",
+        value_fn=lambda obj: (
+            None
+            if obj is None or not isinstance(getattr(obj, "raw", None), dict)
+            else (None if obj.raw.get("epb", -1) < 0 else obj.raw.get("epb"))
+        ),
+        icon="mdi:car-brake-parking",
+        entity_registry_enabled_default=False,
+        entity_category=EntityCategory.DIAGNOSTIC,
+    ),
 )
 
 
