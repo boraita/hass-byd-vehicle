@@ -96,6 +96,15 @@ BINARY_SENSOR_DESCRIPTIONS: tuple[BydBinarySensorDescription, ...] = (
         device_class=BinarySensorDeviceClass.BATTERY_CHARGING,
         value_fn=_is_charging_from_realtime,
     ),
+    # Plug/charger connection.  Reads from the smart-charging endpoint
+    # because the realtime payload reports ``connectState=-1``
+    # permanently on Sealion 7 (and other EU 2024 cars) — see issue #115.
+    BydBinarySensorDescription(
+        key="is_charger_connected",
+        source="charging",
+        device_class=BinarySensorDeviceClass.PLUG,
+        value_fn=lambda c: c.is_connected if c is not None else None,
+    ),
     BydBinarySensorDescription(
         key="is_any_door_open",
         source="realtime",
