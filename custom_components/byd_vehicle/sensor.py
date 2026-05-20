@@ -1507,7 +1507,9 @@ SENSOR_DESCRIPTIONS: tuple[BydSensorDescription, ...] = (
         name="Vehicle raw (diagnostic)",
         source="vehicle",
         value_fn=lambda v: (
-            len(v.raw) if v is not None and isinstance(getattr(v, "raw", None), dict) else None
+            len(v.raw)
+            if v is not None and isinstance(getattr(v, "raw", None), dict)
+            else None
         ),
         state_attrs_fn=_raw_dump_attrs,
         icon="mdi:database-search",
@@ -1535,7 +1537,9 @@ SENSOR_DESCRIPTIONS: tuple[BydSensorDescription, ...] = (
         name="Charge sessions (last 10)",
         source="coordinator",
         value_fn=lambda c: (
-            len(c.charge_sessions) if c is not None and hasattr(c, "charge_sessions") else 0
+            len(c.charge_sessions)
+            if c is not None and hasattr(c, "charge_sessions")
+            else 0
         ),
         state_attrs_fn=lambda c: (
             {"sessions": c.charge_sessions}
@@ -1551,7 +1555,9 @@ SENSOR_DESCRIPTIONS: tuple[BydSensorDescription, ...] = (
         name="Realtime raw (diagnostic)",
         source="realtime",
         value_fn=lambda v: (
-            len(v.raw) if v is not None and isinstance(getattr(v, "raw", None), dict) else None
+            len(v.raw)
+            if v is not None and isinstance(getattr(v, "raw", None), dict)
+            else None
         ),
         state_attrs_fn=_raw_dump_attrs,
         icon="mdi:database-search",
@@ -1580,7 +1586,8 @@ SENSOR_DESCRIPTIONS: tuple[BydSensorDescription, ...] = (
                     ensure_ascii=False,
                 ),
             }
-            if c is not None and getattr(c, "car", None) is not None
+            if c is not None
+            and getattr(c, "car", None) is not None
             and getattr(c.car, "capabilities", None) is not None
             else {}
         ),
