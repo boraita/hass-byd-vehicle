@@ -1706,6 +1706,30 @@ SENSOR_DESCRIPTIONS: tuple[BydSensorDescription, ...] = (
         entity_registry_enabled_default=False,
         entity_category=EntityCategory.DIAGNOSTIC,
     ),
+    BydSensorDescription(
+        key="sentry_status_raw",
+        name="Sentry status (raw)",
+        source="realtime",
+        attr_key="sentry_status",
+        icon="mdi:shield-car",
+        entity_registry_enabled_default=False,
+        entity_category=EntityCategory.DIAGNOSTIC,
+    ),
+    BydSensorDescription(
+        key="sentry_status_label",
+        name="Sentry status",
+        source="realtime",
+        value_fn=lambda r: (
+            {0: "off", 1: "standby", 2: "armed"}.get(getattr(r, "sentry_status", None))
+            if r is not None
+            else None
+        ),
+        device_class=SensorDeviceClass.ENUM,
+        options=["off", "standby", "armed"],
+        icon="mdi:shield-car",
+        entity_registry_enabled_default=False,
+        entity_category=EntityCategory.DIAGNOSTIC,
+    ),
 )
 
 
