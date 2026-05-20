@@ -9,7 +9,7 @@
   "iot_class": "cloud_polling",
   "issue_tracker": "https://github.com/jkaberg/hass-byd-vehicle/issues",
   "requirements": [
-    "pybyd @ git+https://github.com/boraita/pyBYD@feat/sealion-21-cleanup-and-mapping"
+    "pybyd @ git+https://github.com/boraita/pyBYD@feat/sealion-22-stop-charging"
   ],
-  "version": "0.0.80-sealion.21"
+  "version": "0.0.80-sealion.22"
 }
