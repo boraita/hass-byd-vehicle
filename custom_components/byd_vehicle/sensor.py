@@ -887,6 +887,107 @@ SENSOR_DESCRIPTIONS: tuple[BydSensorDescription, ...] = (
         entity_registry_enabled_default=False,
         entity_category=EntityCategory.DIAGNOSTIC,
     ),
+    BydSensorDescription(
+        key="hvac_wind_mode",
+        source="hvac",
+        attr_key="wind_mode",
+        value_fn=lambda h: (
+            getattr(getattr(h, "wind_mode", None), "name", None)
+            if h is not None
+            else None
+        ),
+        icon="mdi:fan",
+        entity_registry_enabled_default=False,
+        entity_category=EntityCategory.DIAGNOSTIC,
+    ),
+    BydSensorDescription(
+        key="hvac_wind_position",
+        source="hvac",
+        attr_key="wind_position",
+        value_fn=lambda h: (
+            getattr(getattr(h, "wind_position", None), "name", None)
+            if h is not None
+            else None
+        ),
+        icon="mdi:air-conditioner",
+        entity_registry_enabled_default=False,
+        entity_category=EntityCategory.DIAGNOSTIC,
+    ),
+    BydSensorDescription(
+        key="hvac_ac_mode",
+        source="hvac",
+        attr_key="air_conditioning_mode",
+        value_fn=lambda h: (
+            getattr(getattr(h, "air_conditioning_mode", None), "name", None)
+            if h is not None
+            else None
+        ),
+        icon="mdi:air-conditioner",
+        entity_registry_enabled_default=False,
+        entity_category=EntityCategory.DIAGNOSTIC,
+    ),
+    BydSensorDescription(
+        key="front_defrost_status",
+        source="hvac",
+        attr_key="front_defrost_status",
+        icon="mdi:car-defrost-front",
+        entity_registry_enabled_default=False,
+        entity_category=EntityCategory.DIAGNOSTIC,
+    ),
+    BydSensorDescription(
+        key="electric_defrost_status",
+        source="hvac",
+        attr_key="electric_defrost_status",
+        icon="mdi:car-defrost-rear",
+        entity_registry_enabled_default=False,
+        entity_category=EntityCategory.DIAGNOSTIC,
+    ),
+    BydSensorDescription(
+        key="wiper_heat_status",
+        source="hvac",
+        attr_key="wiper_heat_status",
+        icon="mdi:wiper",
+        entity_registry_enabled_default=False,
+        entity_category=EntityCategory.DIAGNOSTIC,
+    ),
+    BydSensorDescription(
+        key="rapid_increase_temp",
+        source="hvac",
+        attr_key="rapid_increase_temp_state",
+        icon="mdi:thermometer-chevron-up",
+        entity_registry_enabled_default=False,
+        entity_category=EntityCategory.DIAGNOSTIC,
+    ),
+    BydSensorDescription(
+        key="rapid_decrease_temp",
+        source="hvac",
+        attr_key="rapid_decrease_temp_state",
+        icon="mdi:thermometer-chevron-down",
+        entity_registry_enabled_default=False,
+        entity_category=EntityCategory.DIAGNOSTIC,
+    ),
+    BydSensorDescription(
+        key="hvac_temp_out_car",
+        source="hvac",
+        attr_key="temp_out_car",
+        native_unit_of_measurement=UnitOfTemperature.CELSIUS,
+        device_class=SensorDeviceClass.TEMPERATURE,
+        state_class=SensorStateClass.MEASUREMENT,
+        icon="mdi:thermometer",
+        entity_registry_enabled_default=False,
+        entity_category=EntityCategory.DIAGNOSTIC,
+    ),
+    BydSensorDescription(
+        key="hvac_copilot_target_temp",
+        source="hvac",
+        attr_key="copilot_setting_temp_new",
+        native_unit_of_measurement=UnitOfTemperature.CELSIUS,
+        device_class=SensorDeviceClass.TEMPERATURE,
+        state_class=SensorStateClass.MEASUREMENT,
+        icon="mdi:thermostat",
+        entity_registry_enabled_default=False,
+        entity_category=EntityCategory.DIAGNOSTIC,
+    ),
     # ==========================================
     # Realtime: additional diagnostic sensors
     #   (disabled by default — raw / unparsed)
