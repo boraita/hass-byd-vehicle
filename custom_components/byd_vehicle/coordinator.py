@@ -95,6 +95,8 @@ class BydApi:
         self._debug_dump_dir = Path(hass.config.path(".storage/byd_vehicle_debug"))
         self._coordinators: dict[str, BydDataUpdateCoordinator] = {}
         self._gps_coordinators: dict[str, BydGpsUpdateCoordinator] = {}
+        self._mqtt_event_counters: dict[str, int] = {}
+        self._mqtt_event_samples: list[dict[str, Any]] = []
         _LOGGER.debug(
             "BYD API initialized: entry_id=%s, region=%s, language=%s",
             entry.entry_id,
@@ -137,6 +139,18 @@ class BydApi:
         self, event: str, vin: str, respond_data: dict[str, Any]
     ) -> None:
         """Handle generic MQTT events from pyBYD."""
+        self._mqtt_event_counters[event] = self._mqtt_event_counters.get(event, 0) + 1
+        keys = sorted(respond_data.keys()) if isinstance(respond_data, dict) else []
+        self._mqtt_event_samples.append(
+            {
+                "t": datetime.now(tz=UTC).isoformat(),
+                "event": event,
+                "vin": vin[-6:] if vin else "-",
+                "keys": keys[:20],
+            }
+        )
+        if len(self._mqtt_event_samples) > 50:
+            self._mqtt_event_samples = self._mqtt_event_samples[-50:]
         if self._debug_dumps_enabled:
             dump: dict[str, Any] = {
                 "vin": vin,
@@ -146,6 +160,16 @@ class BydApi:
             self._hass.async_create_task(
                 self._async_write_debug_dump(f"mqtt_{event}", dump)
             )
+
+    @property
+    def mqtt_event_counters(self) -> dict[str, int]:
+        """Per-event MQTT push counts since HA start."""
+        return dict(self._mqtt_event_counters)
+
+    @property
+    def mqtt_event_samples(self) -> list[dict[str, Any]]:
+        """Last 50 MQTT events received (timestamp + event_type + key list)."""
+        return list(self._mqtt_event_samples)
 
     def _handle_command_ack(self, ack: CommandAckEvent) -> None:
         """Process a structured command ACK from pyBYD (diagnostics)."""
@@ -1162,18 +1186,24 @@ class BydDataUpdateCoordinator(DataUpdateCoordinator[VehicleSnapshot]):
         try:
             await self.async_fetch_charging()
         except Exception as exc:  # noqa: BLE001
-            _LOGGER.warning("post-OTA charging refresh failed vin=%s err=%s", self._vin, exc)
+            _LOGGER.warning(
+                "post-OTA charging refresh failed vin=%s err=%s", self._vin, exc
+            )
         try:
             await self.async_refresh_firmware_metadata()
         except Exception as exc:  # noqa: BLE001
-            _LOGGER.warning("post-OTA firmware refresh failed vin=%s err=%s", self._vin, exc)
+            _LOGGER.warning(
+                "post-OTA firmware refresh failed vin=%s err=%s", self._vin, exc
+            )
 
     async def _async_post_plug_refresh(self) -> None:
         """Background: refresh charging snapshot after plug detected."""
         try:
             await self.async_fetch_charging()
         except Exception as exc:  # noqa: BLE001
-            _LOGGER.warning("post-plug charging refresh failed vin=%s err=%s", self._vin, exc)
+            _LOGGER.warning(
+                "post-plug charging refresh failed vin=%s err=%s", self._vin, exc
+            )
 
     def _maybe_fire_phase_changed(
         self,
@@ -1250,11 +1280,13 @@ class BydDataUpdateCoordinator(DataUpdateCoordinator[VehicleSnapshot]):
                 if gl is not None:
                     power = round(abs(float(gl)) / 1000.0, 2)
             if soc is not None:
-                self._charge_curve.append({
-                    "t": datetime.now(tz=UTC).isoformat(),
-                    "soc": soc,
-                    "kw": power,
-                })
+                self._charge_curve.append(
+                    {
+                        "t": datetime.now(tz=UTC).isoformat(),
+                        "soc": soc,
+                        "kw": power,
+                    }
+                )
                 if len(self._charge_curve) > 200:
                     self._charge_curve = self._charge_curve[-200:]
 
@@ -1289,17 +1321,19 @@ class BydDataUpdateCoordinator(DataUpdateCoordinator[VehicleSnapshot]):
             kwh_added = round(soc_added * 82.5 / 100.0, 2)
         powers = [s.get("kw") for s in self._charge_curve if s.get("kw") is not None]
         avg_kw = round(sum(powers) / len(powers), 2) if powers else None
-        self._charge_sessions.append({
-            "started_at": started.isoformat(),
-            "ended_at": datetime.now(tz=UTC).isoformat(),
-            "duration_minutes": duration_min,
-            "start_soc": start_soc,
-            "end_soc": end_soc,
-            "soc_added": soc_added,
-            "kwh_added": kwh_added,
-            "avg_kw": avg_kw,
-            "samples": len(self._charge_curve),
-        })
+        self._charge_sessions.append(
+            {
+                "started_at": started.isoformat(),
+                "ended_at": datetime.now(tz=UTC).isoformat(),
+                "duration_minutes": duration_min,
+                "start_soc": start_soc,
+                "end_soc": end_soc,
+                "soc_added": soc_added,
+                "kwh_added": kwh_added,
+                "avg_kw": avg_kw,
+                "samples": len(self._charge_curve),
+            }
+        )
         if len(self._charge_sessions) > 10:
             self._charge_sessions = self._charge_sessions[-10:]
 

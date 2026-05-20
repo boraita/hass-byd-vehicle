@@ -1729,6 +1729,27 @@ SENSOR_DESCRIPTIONS: tuple[BydSensorDescription, ...] = (
         entity_category=EntityCategory.DIAGNOSTIC,
     ),
     BydSensorDescription(
+        key="mqtt_event_log",
+        name="MQTT event log",
+        source="coordinator",
+        value_fn=lambda c: (
+            sum((c._api.mqtt_event_counters or {}).values())
+            if c is not None and getattr(c, "_api", None) is not None
+            else 0
+        ),
+        state_attrs_fn=lambda c: (
+            {
+                "by_event": c._api.mqtt_event_counters,
+                "last_samples": c._api.mqtt_event_samples[-30:],
+            }
+            if c is not None and getattr(c, "_api", None) is not None
+            else {}
+        ),
+        icon="mdi:message-arrow-left",
+        entity_registry_enabled_default=False,
+        entity_category=EntityCategory.DIAGNOSTIC,
+    ),
+    BydSensorDescription(
         key="gps_speed",
         name="GPS speed",
         source="gps",
