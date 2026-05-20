@@ -74,6 +74,34 @@ BUTTON_DESCRIPTIONS: tuple[BydButtonDescription, ...] = (
         capability_key="close_trunk",
         car_command=lambda car: car.trunk.close(),
     ),
+    BydButtonDescription(
+        key="start_defrost",
+        name="Start defrost",
+        icon="mdi:car-defrost-front",
+        capability_key="start_defrost",
+        car_command=lambda car: car.defrost.start(),
+    ),
+    BydButtonDescription(
+        key="stop_defrost",
+        name="Stop defrost",
+        icon="mdi:car-defrost-front",
+        capability_key="stop_defrost",
+        car_command=lambda car: car.defrost.stop(),
+    ),
+    BydButtonDescription(
+        key="start_wiper_heat",
+        name="Start heated wipers",
+        icon="mdi:wiper",
+        capability_key="start_wiper_heat",
+        car_command=lambda car: car.wiper_heat.start(),
+    ),
+    BydButtonDescription(
+        key="stop_wiper_heat",
+        name="Stop heated wipers",
+        icon="mdi:wiper",
+        capability_key="stop_wiper_heat",
+        car_command=lambda car: car.wiper_heat.stop(),
+    ),
 )
 
 
