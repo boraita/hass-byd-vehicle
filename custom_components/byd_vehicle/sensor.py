@@ -465,9 +465,14 @@ SENSOR_DESCRIPTIONS: tuple[BydSensorDescription, ...] = (
         value_fn=_round_int_attr("total_mileage_v2"),
     ),
     # Charging detail from realtime
+    # Source the charging-state value from the smart-charging endpoint:
+    # the realtime payload reports ``chargingState=-1`` permanently on
+    # Sealion 7 (and other EU 2024 cars) while the charging endpoint
+    # returns the real numeric state (15=connected, 1=charging, …).
+    # See issue #115.
     BydSensorDescription(
         key="charging_state",
-        source="realtime",
+        source="charging",
         icon="mdi:ev-station",
         entity_registry_enabled_default=False,
         entity_category=EntityCategory.DIAGNOSTIC,
