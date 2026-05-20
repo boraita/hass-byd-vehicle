@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import re
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -180,6 +181,24 @@ def _attr_getter(name: str) -> Callable[[Any], Any]:
         return getattr(obj, name, None)
 
     return _get
+
+
+def _raw_dump_attrs(obj: Any) -> dict[str, Any]:
+    """JSON-stringify a model's raw dict for safe attribute exposure.
+
+    HA drops attributes that aren't natively JSON-serialisable.  Stringifying
+    the dump puts everything in a single ``raw`` attribute the user can copy.
+    """
+    if obj is None:
+        return {}
+    raw = getattr(obj, "raw", None)
+    if not isinstance(raw, dict) or not raw:
+        return {}
+    try:
+        encoded = json.dumps(raw, default=str, ensure_ascii=False)
+    except (TypeError, ValueError):
+        return {}
+    return {"raw_json": encoded, "key_count": len(raw)}
 
 
 _WEEKDAY_LABELS: tuple[str, ...] = (
@@ -1389,9 +1408,7 @@ SENSOR_DESCRIPTIONS: tuple[BydSensorDescription, ...] = (
         value_fn=lambda v: (
             len(v.raw) if v is not None and isinstance(getattr(v, "raw", None), dict) else None
         ),
-        state_attrs_fn=lambda v: (
-            v.raw if v is not None and isinstance(getattr(v, "raw", None), dict) else {}
-        ),
+        state_attrs_fn=_raw_dump_attrs,
         icon="mdi:database-search",
         entity_registry_enabled_default=False,
         entity_category=EntityCategory.DIAGNOSTIC,
@@ -1435,8 +1452,36 @@ SENSOR_DESCRIPTIONS: tuple[BydSensorDescription, ...] = (
         value_fn=lambda v: (
             len(v.raw) if v is not None and isinstance(getattr(v, "raw", None), dict) else None
         ),
-        state_attrs_fn=lambda v: (
-            v.raw if v is not None and isinstance(getattr(v, "raw", None), dict) else {}
+        state_attrs_fn=_raw_dump_attrs,
+        icon="mdi:database-search",
+        entity_registry_enabled_default=False,
+        entity_category=EntityCategory.DIAGNOSTIC,
+    ),
+    BydSensorDescription(
+        key="latest_config_raw",
+        name="Latest config raw (diagnostic)",
+        source="coordinator",
+        value_fn=lambda c: (
+            len(getattr(getattr(c.car, "capabilities", None), "function_nos", []) or [])
+            if c is not None and getattr(c, "car", None) is not None
+            else 0
+        ),
+        state_attrs_fn=lambda c: (
+            {
+                "function_nos": getattr(c.car.capabilities, "function_nos", []),
+                "codes": getattr(c.car.capabilities, "codes", []),
+                "unknown_function_nos": getattr(
+                    c.car.capabilities, "unknown_function_nos", []
+                ),
+                "raw_json": json.dumps(
+                    getattr(c.car.capabilities, "raw", {}) or {},
+                    default=str,
+                    ensure_ascii=False,
+                ),
+            }
+            if c is not None and getattr(c, "car", None) is not None
+            and getattr(c.car, "capabilities", None) is not None
+            else {}
         ),
         icon="mdi:database-search",
         entity_registry_enabled_default=False,
