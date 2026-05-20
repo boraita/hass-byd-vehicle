@@ -1362,6 +1362,54 @@ SENSOR_DESCRIPTIONS: tuple[BydSensorDescription, ...] = (
         entity_registry_enabled_default=False,
         entity_category=EntityCategory.DIAGNOSTIC,
     ),
+    BydSensorDescription(
+        key="departure_target_time",
+        name="Departure target time",
+        source="charging_schedule_journey",
+        available_fn=lambda obj: (
+            obj is not None and obj.use_vehicle_time is not None
+        ),
+        value_fn=lambda obj: (
+            obj.use_vehicle_time.strftime("%H:%M")
+            if obj is not None and obj.use_vehicle_time is not None
+            else None
+        ),
+        icon="mdi:car-clock",
+        entity_registry_enabled_default=False,
+        entity_category=EntityCategory.DIAGNOSTIC,
+    ),
+    BydSensorDescription(
+        key="discount_window_start",
+        name="Off-peak window start",
+        source="charging_schedule_journey",
+        available_fn=lambda obj: (
+            obj is not None and obj.discount_start is not None
+        ),
+        value_fn=lambda obj: (
+            obj.discount_start.strftime("%H:%M")
+            if obj is not None and obj.discount_start is not None
+            else None
+        ),
+        icon="mdi:cash-clock",
+        entity_registry_enabled_default=False,
+        entity_category=EntityCategory.DIAGNOSTIC,
+    ),
+    BydSensorDescription(
+        key="discount_window_end",
+        name="Off-peak window end",
+        source="charging_schedule_journey",
+        available_fn=lambda obj: (
+            obj is not None and obj.discount_end is not None
+        ),
+        value_fn=lambda obj: (
+            obj.discount_end.strftime("%H:%M")
+            if obj is not None and obj.discount_end is not None
+            else None
+        ),
+        icon="mdi:cash-clock",
+        entity_registry_enabled_default=False,
+        entity_category=EntityCategory.DIAGNOSTIC,
+    ),
     # =============================================
     # Realtime: previously-unparsed extras
     # =============================================
