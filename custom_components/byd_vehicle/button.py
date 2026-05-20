@@ -49,6 +49,17 @@ BUTTON_DESCRIPTIONS: tuple[BydButtonDescription, ...] = (
         capability_key="close_windows",
         car_command=lambda car: car.windows.close(),
     ),
+    # Vent windows: live-verified on Sealion 7 — `OPENWINDOW` cracks
+    # all windows to ~10 % rather than fully dropping them.  This is
+    # BYD's native ventilation flow.  No known remote command for
+    # full-drop; see WindowsCapability docstring.
+    BydButtonDescription(
+        key="open_windows",
+        name="Vent windows",
+        icon="mdi:weather-windy",
+        capability_key="open_windows",
+        car_command=lambda car: car.windows.open(),
+    ),
     BydButtonDescription(
         key="open_trunk",
         name="Open trunk",
@@ -62,25 +73,6 @@ BUTTON_DESCRIPTIONS: tuple[BydButtonDescription, ...] = (
         icon="mdi:car-back",
         capability_key="close_trunk",
         car_command=lambda car: car.trunk.close(),
-    ),
-    # One-tap pre-conditioning — payload is UNVERIFIED.  The button
-    # invocation sends commandType=ONETAPPREP with no controlParams; if
-    # the BYD cloud rejects it with code=1001/1009 we'll need to wire a
-    # typed param model (see CONTROLS_DISCOVERED.md and the OneTapCapability
-    # docstring in pyBYD).
-    BydButtonDescription(
-        key="one_tap_prep",
-        name="One-tap prep",
-        icon="mdi:car-cog",
-        capability_key="one_tap_prep",
-        car_command=lambda car: car.one_tap.prep(),
-    ),
-    BydButtonDescription(
-        key="one_tap_shutdown",
-        name="One-tap shutdown",
-        icon="mdi:power",
-        capability_key="one_tap_shutdown",
-        car_command=lambda car: car.one_tap.shutdown(),
     ),
 )
 
@@ -165,9 +157,16 @@ class BydForcePollButton(BydVehicleEntity, ButtonEntity):
         self._attr_unique_id = f"{vin}_button_force_poll"
 
     async def async_press(self) -> None:
-        """Force-refresh all coordinators for this vehicle."""
+        """Force-refresh all coordinators for this vehicle.
+
+        ``async_force_poll_now`` covers realtime + charging in one shot
+        (the regular coordinator refresh only does realtime), so a single
+        button press lands fresh data on every charging-related sensor
+        rather than leaving them stale until the next scheduled charging
+        poll several minutes later.
+        """
         try:
-            await self.coordinator.async_force_refresh()
+            await self.coordinator.async_force_poll_now()
             gps = self._gps_coordinator
             if gps is not None:
                 await gps.async_force_refresh()

@@ -9,6 +9,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from homeassistant.components.sensor import (
+    RestoreSensor,
     SensorDeviceClass,
     SensorEntity,
     SensorEntityDescription,
@@ -18,6 +19,7 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import (
     PERCENTAGE,
     EntityCategory,
+    UnitOfEnergy,
     UnitOfLength,
     UnitOfPower,
     UnitOfPressure,
@@ -654,6 +656,22 @@ SENSOR_DESCRIPTIONS: tuple[BydSensorDescription, ...] = (
         icon="mdi:battery-arrow-up",
         entity_registry_enabled_default=False,
     ),
+    # Energy delivered to the battery this session, derived from the SoC
+    # delta times the Sealion 7 Comfort nameplate capacity (82.5 kWh).
+    # Works for any charging source — V2C, public AC, public DC — since
+    # the cloud reports the SoC field regardless of where the energy
+    # came from.  Coarse: rounding error is in the few-hundred-Wh range.
+    BydSensorDescription(
+        key="charge_session_kwh_added",
+        name="Charge session kWh added",
+        source="coordinator",
+        attr_key="charge_session_kwh_added",
+        native_unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
+        device_class=SensorDeviceClass.ENERGY,
+        state_class=SensorStateClass.TOTAL,
+        icon="mdi:lightning-bolt-circle",
+        entity_registry_enabled_default=False,
+    ),
     BydSensorDescription(
         key="time_until_full",
         name="Time until full",
@@ -1224,6 +1242,67 @@ SENSOR_DESCRIPTIONS: tuple[BydSensorDescription, ...] = (
         entity_registry_enabled_default=False,
         entity_category=EntityCategory.DIAGNOSTIC,
     ),
+    # =============================================
+    # Realtime: previously-unparsed extras
+    # =============================================
+    # HVAC target temperature the user set inside the car.  Useful for
+    # automations that want to detect manual climate changes vs. our
+    # remote-control invocations.
+    BydSensorDescription(
+        key="main_setting_temp",
+        name="HVAC target temperature",
+        source="realtime",
+        attr_key="main_setting_temp_new",
+        native_unit_of_measurement=UnitOfTemperature.CELSIUS,
+        device_class=SensorDeviceClass.TEMPERATURE,
+        state_class=SensorStateClass.MEASUREMENT,
+        icon="mdi:thermostat",
+        entity_registry_enabled_default=False,
+    ),
+    # Air recirculation mode (external = fresh air, internal = recirculate).
+    # The HVAC component already exposes this indirectly but having it as a
+    # standalone sensor lets automations key off it (e.g. switch to
+    # recirculate when AQI drops outside).
+    BydSensorDescription(
+        key="air_run_state",
+        name="Air recirculation",
+        source="realtime",
+        value_fn=lambda obj: (
+            {1: "external", 2: "internal"}.get(
+                getattr(getattr(obj, "air_run_state", None), "value", None)
+            )
+            if obj is not None
+            else None
+        ),
+        device_class=SensorDeviceClass.ENUM,
+        options=["external", "internal"],
+        icon="mdi:air-filter",
+        entity_registry_enabled_default=False,
+    ),
+    # Battery preheating state during DC charging.  Distinct from
+    # `battery_heating` binary which only reports on/off — this exposes
+    # the more granular state code reported by the car.
+    BydSensorDescription(
+        key="charge_heat_state",
+        name="Charge heat state",
+        source="realtime",
+        attr_key="charge_heat_state",
+        icon="mdi:radiator",
+        entity_registry_enabled_default=False,
+        entity_category=EntityCategory.DIAGNOSTIC,
+    ),
+    # Equivalent consumption — BYD's combined kWh/100km figure that
+    # mixes electric + (for PHEVs) fuel into a single value.  Already
+    # parsed by pyBYD; just wasn't surfaced as a sensor.
+    BydSensorDescription(
+        key="eq_consumption_raw",
+        name="Equivalent consumption (raw)",
+        source="realtime",
+        attr_key="eq_consumption",
+        icon="mdi:lightning-bolt-outline",
+        entity_registry_enabled_default=False,
+        entity_category=EntityCategory.DIAGNOSTIC,
+    ),
 )
 
 
@@ -1336,11 +1415,15 @@ _TIRE_UNIT_MAP = {
 }
 
 
-class BydSensor(BydVehicleEntity, SensorEntity):
+class BydSensor(BydVehicleEntity, RestoreSensor):
     """Representation of a BYD vehicle sensor.
 
     All state is read from ``VehicleSnapshot`` sections via the
-    base-class ``_get_source_obj()`` helper. No local shadow state.
+    base-class ``_get_source_obj()`` helper. The ``_last_native_value``
+    cache (used by ``keep_previous_when_zero`` and friends) survives
+    restarts and config-entry reloads via :class:`RestoreSensor`, so a
+    transient sentinel payload right after a reload doesn't flip a
+    previously-known value (e.g. battery 98 %) back to ``unknown``.
     """
 
     _attr_has_entity_name = True
@@ -1366,6 +1449,24 @@ class BydSensor(BydVehicleEntity, SensorEntity):
         if description.entity_registry_enabled_default is not False:
             if self._resolve_validated_value() is None:
                 self._attr_entity_registry_enabled_default = False
+
+    async def async_added_to_hass(self) -> None:
+        """Restore last known native value before the coordinator binds.
+
+        The restored value seeds ``_last_native_value`` so that the first
+        post-restart coordinator update can still fall through to the
+        previous value when the cloud returns a sentinel payload.
+        """
+        await super().async_added_to_hass()
+        if self.entity_description.validator_fn is None:
+            return
+        last = await self.async_get_last_sensor_data()
+        if last is None:
+            return
+        restored = last.native_value
+        if restored is None:
+            return
+        self._last_native_value = restored
 
     # ------------------------------------------------------------------
     # Helpers
