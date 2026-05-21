@@ -348,7 +348,11 @@ class BydScheduleEnabledSwitch(BydVehicleEntity, SwitchEntity):
         """Return True if schedule is enabled."""
         if self._optimistic_state is not None:
             return self._optimistic_state
-        if self.coordinator.data and self.coordinator.data.charging_schedule and self.coordinator.data.charging_schedule.charge:
+        if (
+            self.coordinator.data
+            and self.coordinator.data.charging_schedule
+            and self.coordinator.data.charging_schedule.charge
+        ):
             return self.coordinator.data.charging_schedule.charge.status
         return None
 
@@ -394,7 +398,11 @@ class BydChargeToFullSwitch(BydVehicleEntity, SwitchEntity):
         """Return True if charging to full."""
         if self._optimistic_state is not None:
             return self._optimistic_state
-        if self.coordinator.data and self.coordinator.data.charging_schedule and self.coordinator.data.charging_schedule.charge:
+        if (
+            self.coordinator.data
+            and self.coordinator.data.charging_schedule
+            and self.coordinator.data.charging_schedule.charge
+        ):
             return self.coordinator.data.charging_schedule.charge.charge_until_full
         return None
 
@@ -440,7 +448,11 @@ class BydRepeatDailySwitch(BydVehicleEntity, SwitchEntity):
         """Return True if repeat is daily."""
         if self._optimistic_state is not None:
             return self._optimistic_state
-        if self.coordinator.data and self.coordinator.data.charging_schedule and self.coordinator.data.charging_schedule.charge:
+        if (
+            self.coordinator.data
+            and self.coordinator.data.charging_schedule
+            and self.coordinator.data.charging_schedule.charge
+        ):
             return self.coordinator.data.charging_schedule.charge.charge_way == "e"
         return None
 

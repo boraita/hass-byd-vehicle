@@ -813,7 +813,10 @@ class BydDataUpdateCoordinator(DataUpdateCoordinator[VehicleSnapshot]):
         previous_snapshot = self.data
 
         if self.update_pending:
-            _LOGGER.debug("Skipping telemetry refresh due to pending schedule update: vin=%s", self._vin[-6:])
+            _LOGGER.debug(
+                "Skipping telemetry refresh due to pending schedule update: vin=%s",
+                self._vin[-6:],
+            )
             if self.data is not None:
                 return self.data
             return VehicleSnapshot(vehicle=self._vehicle)
@@ -1628,7 +1631,9 @@ class BydDataUpdateCoordinator(DataUpdateCoordinator[VehicleSnapshot]):
                 exc,
             )
 
-    async def async_request_schedule_update(self, property_name: str, new_value: Any) -> None:
+    async def async_request_schedule_update(
+        self, property_name: str, new_value: Any
+    ) -> None:
         """Queue a debounced update for the charging schedule."""
         self._pending_schedule_updates[property_name] = new_value
 
@@ -1650,50 +1655,70 @@ class BydDataUpdateCoordinator(DataUpdateCoordinator[VehicleSnapshot]):
         )
 
     async def _async_execute_schedule_update(self) -> None:
-        """Execute the pending schedule update."""
+        """Execute the pending schedule update.
+
+        Bails out cleanly when there is no live charging-schedule baseline
+        to merge against — refusing to overwrite the cloud with synthetic
+        defaults is safer than guessing.
+        """
         if not self._pending_schedule_updates:
             self.update_pending = False
             return
 
-        current_enabled = True
-        current_charge_to_full = True
-        current_start_time = "22:00"
-        current_end_time = "full"
-        current_charge_way = "e"
-
-        if self.data and self.data.charging_schedule and self.data.charging_schedule.charge:
+        charge = None
+        if self.data and self.data.charging_schedule:
             charge = self.data.charging_schedule.charge
-            if charge.status is not None:
-                current_enabled = charge.status
-            if charge.charge_until_full is not None:
-                current_charge_to_full = charge.charge_until_full
-            
-            if charge.start_time is not None:
-                current_start_time = charge.start_time.strftime("%H:%M")
-            if charge.end_time is not None:
-                current_end_time = charge.end_time.strftime("%H:%M")
-                
-            if charge.charge_way is not None:
-                current_charge_way = charge.charge_way
+        if charge is None:
+            _LOGGER.warning(
+                "Schedule update aborted vin=%s — no current schedule baseline",
+                self._vin[-6:],
+            )
+            self._pending_schedule_updates.clear()
+            self.update_pending = False
+            return
 
         updates = self._pending_schedule_updates
-        
-        enabled = updates.get("enabled", current_enabled)
-        charge_to_full = updates.get("charge_to_full", current_charge_to_full)
-        pattern = updates.get("pattern", current_charge_way)
-        start_time_obj = updates.get("start_time")
-        end_time_obj = updates.get("end_time")
+        enabled = updates.get(
+            "enabled", charge.status if charge.status is not None else True
+        )
+        charge_to_full = updates.get(
+            "charge_to_full",
+            charge.charge_until_full if charge.charge_until_full is not None else True,
+        )
+        pattern = updates.get(
+            "pattern", charge.charge_way if charge.charge_way is not None else "e"
+        )
 
-        start_charge_time = start_time_obj.strftime("%H:%M") if start_time_obj else current_start_time
-        
+        start_time_obj = updates.get("start_time")
+        if start_time_obj is not None:
+            start_charge_time = start_time_obj.strftime("%H:%M")
+        elif charge.start_time is not None:
+            start_charge_time = charge.start_time.strftime("%H:%M")
+        else:
+            _LOGGER.warning(
+                "Schedule update aborted vin=%s — no start_time baseline",
+                self._vin[-6:],
+            )
+            self._pending_schedule_updates.clear()
+            self.update_pending = False
+            return
+
         if charge_to_full:
             end_charge_time = "full"
         else:
-            end_charge_time = end_time_obj.strftime("%H:%M") if end_time_obj else current_end_time
-            if end_charge_time == "full":
-                end_charge_time = "06:00"
-
-        charge_way = pattern
+            end_time_obj = updates.get("end_time")
+            if end_time_obj is not None:
+                end_charge_time = end_time_obj.strftime("%H:%M")
+            elif charge.end_time is not None:
+                end_charge_time = charge.end_time.strftime("%H:%M")
+            else:
+                _LOGGER.warning(
+                    "Schedule update aborted vin=%s — no end_time baseline",
+                    self._vin[-6:],
+                )
+                self._pending_schedule_updates.clear()
+                self.update_pending = False
+                return
 
         self._pending_schedule_updates.clear()
 
@@ -1701,11 +1726,19 @@ class BydDataUpdateCoordinator(DataUpdateCoordinator[VehicleSnapshot]):
             await self.async_save_charging_schedule(
                 start_charge_time=start_charge_time,
                 end_charge_time=end_charge_time,
-                charge_way=charge_way,
+                charge_way=pattern,
                 enabled=enabled,
             )
-        except Exception as exc:
-            _LOGGER.error("Debounced schedule save failed: %s", exc)
+        except (
+            BydEndpointNotSupportedError,
+            BydRemoteControlError,
+            BydAuthenticationError,
+            BydApiError,
+            BydTransportError,
+        ) as exc:
+            _LOGGER.warning(
+                "Debounced schedule save failed vin=%s: %s", self._vin[-6:], exc
+            )
         finally:
             self.update_pending = False
             await self.async_request_refresh()
