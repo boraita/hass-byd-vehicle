@@ -432,8 +432,9 @@ SENSOR_DESCRIPTIONS: tuple[BydSensorDescription, ...] = (
         device_class=SensorDeviceClass.TEMPERATURE,
         state_class=SensorStateClass.MEASUREMENT,
         value_fn=lambda obj: (
-            int(round(obj.temp_in_car)) if obj.temp_in_car is not None else 0
+            int(round(obj.temp_in_car)) if obj.temp_in_car is not None else None
         ),
+        validator_fn=keep_previous_when_zero,
     ),
     # Tire pressures – unit resolved dynamically from tire_press_unit;
     # kPa is the default because most BYD vehicles report tirePressUnit=3.
@@ -489,6 +490,7 @@ SENSOR_DESCRIPTIONS: tuple[BydSensorDescription, ...] = (
         device_class=SensorDeviceClass.TEMPERATURE,
         state_class=SensorStateClass.MEASUREMENT,
         value_fn=_round_int_attr("temp_out_car"),
+        validator_fn=keep_previous_when_zero,
     ),
     BydSensorDescription(
         key="pm",
@@ -496,6 +498,7 @@ SENSOR_DESCRIPTIONS: tuple[BydSensorDescription, ...] = (
         native_unit_of_measurement="µg/m³",
         device_class=SensorDeviceClass.PM25,
         state_class=SensorStateClass.MEASUREMENT,
+        validator_fn=keep_previous_when_zero,
     ),
     # ===========================================================
     # Realtime: disabled by default (diagnostic / secondary data)
@@ -974,6 +977,7 @@ SENSOR_DESCRIPTIONS: tuple[BydSensorDescription, ...] = (
         icon="mdi:thermometer",
         entity_registry_enabled_default=False,
         entity_category=EntityCategory.DIAGNOSTIC,
+        validator_fn=keep_previous_when_zero,
     ),
     BydSensorDescription(
         key="hvac_copilot_target_temp",
@@ -985,6 +989,7 @@ SENSOR_DESCRIPTIONS: tuple[BydSensorDescription, ...] = (
         icon="mdi:thermostat",
         entity_registry_enabled_default=False,
         entity_category=EntityCategory.DIAGNOSTIC,
+        validator_fn=keep_previous_when_zero,
     ),
     # ==========================================
     # Realtime: additional diagnostic sensors
@@ -1418,6 +1423,7 @@ SENSOR_DESCRIPTIONS: tuple[BydSensorDescription, ...] = (
         state_class=SensorStateClass.MEASUREMENT,
         icon="mdi:thermostat",
         entity_registry_enabled_default=False,
+        validator_fn=keep_previous_when_zero,
     ),
     # Air recirculation mode (external = fresh air, internal = recirculate).
     # The HVAC component already exposes this indirectly but having it as a
