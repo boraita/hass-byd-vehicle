@@ -782,9 +782,7 @@ SENSOR_DESCRIPTIONS: tuple[BydSensorDescription, ...] = (
         native_unit_of_measurement=UnitOfTime.MINUTES,
         device_class=SensorDeviceClass.DURATION,
         state_class=SensorStateClass.MEASUREMENT,
-        value_fn=lambda obj: (
-            None if (m := _estimate_minutes_to_full(obj)) is None else m % 60
-        ),
+        value_fn=lambda obj: _estimate_minutes_to_full(obj),
         icon="mdi:clock-outline",
         entity_registry_enabled_default=False,
         entity_category=EntityCategory.DIAGNOSTIC,
