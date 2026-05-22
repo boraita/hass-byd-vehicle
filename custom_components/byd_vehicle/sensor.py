@@ -858,13 +858,6 @@ SENSOR_DESCRIPTIONS: tuple[BydSensorDescription, ...] = (
         entity_category=EntityCategory.DIAGNOSTIC,
     ),
     BydSensorDescription(
-        key="epb",
-        source="realtime",
-        icon="mdi:car-brake-parking",
-        entity_registry_enabled_default=False,
-        entity_category=EntityCategory.DIAGNOSTIC,
-    ),
-    BydSensorDescription(
         key="ect_value",
         source="realtime",
         native_unit_of_measurement=UnitOfTemperature.CELSIUS,
@@ -1075,6 +1068,15 @@ SENSOR_DESCRIPTIONS: tuple[BydSensorDescription, ...] = (
     BydSensorDescription(
         key="power_battery_connection",
         source="realtime",
+        value_fn=lambda obj: (
+            None
+            if obj is None or not isinstance(getattr(obj, "raw", None), dict)
+            else (
+                None
+                if obj.raw.get("powerBatteryConnection", -1) < 0
+                else obj.raw.get("powerBatteryConnection")
+            )
+        ),
         icon="mdi:battery-alert",
         entity_registry_enabled_default=False,
         entity_category=EntityCategory.DIAGNOSTIC,
