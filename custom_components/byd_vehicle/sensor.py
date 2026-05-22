@@ -1571,11 +1571,22 @@ SENSOR_DESCRIPTIONS: tuple[BydSensorDescription, ...] = (
         key="charge_curve",
         name="Charge curve",
         source="coordinator",
+        native_unit_of_measurement=UnitOfPower.KILO_WATT,
+        device_class=SensorDeviceClass.POWER,
+        state_class=SensorStateClass.MEASUREMENT,
         value_fn=lambda c: (
-            len(c.charge_curve) if c is not None and hasattr(c, "charge_curve") else 0
+            c.charge_curve[-1].get("kw")
+            if c is not None
+            and hasattr(c, "charge_curve")
+            and c.charge_curve
+            and c.charge_curve[-1].get("kw") is not None
+            else None
         ),
         state_attrs_fn=lambda c: (
-            {"samples": c.charge_curve[-50:]}
+            {
+                "samples": c.charge_curve[-50:],
+                "sample_count": len(c.charge_curve),
+            }
             if c is not None and hasattr(c, "charge_curve")
             else {}
         ),
