@@ -60,6 +60,31 @@ def keep_previous_when_zero(previous: Any, current: Any) -> Any:
     return current
 
 
+def _estimate_minutes_to_full(realtime: Any) -> int | None:
+    """Minutes to 100% derived from current SoC + AC charge power.
+
+    Mirrors ``BydDataUpdateCoordinator.time_until_full_minutes`` so the
+    realtime-sourced ``full_hour``/``full_minute`` entities can show the
+    same estimate as ``time_until_full``.  Battery capacity hard-coded to
+    the Sealion 7 Comfort 82.5 kWh nameplate.
+    """
+    if realtime is None:
+        return None
+    soc = getattr(realtime, "elec_percent", None)
+    gl = getattr(realtime, "gl", None)
+    if soc is None or gl is None:
+        return None
+    try:
+        soc_f = float(soc)
+        power_w = abs(float(gl))
+    except (TypeError, ValueError):
+        return None
+    if soc_f >= 100 or power_w < 500:
+        return None
+    kwh_remaining = 82.5 * (100.0 - soc_f) / 100.0
+    return int((kwh_remaining * 1000.0 / power_w) * 60.0)
+
+
 def _normalize_epoch(value: Any) -> datetime | None:
     """Ensure a pre-parsed BydTimestamp is UTC-aware, or return None."""
     if value is None:
@@ -745,7 +770,7 @@ SENSOR_DESCRIPTIONS: tuple[BydSensorDescription, ...] = (
         device_class=SensorDeviceClass.DURATION,
         state_class=SensorStateClass.MEASUREMENT,
         value_fn=lambda obj: (
-            getattr(obj, "remaining_hours", None) if obj is not None else None
+            None if (m := _estimate_minutes_to_full(obj)) is None else m // 60
         ),
         icon="mdi:clock-outline",
         entity_registry_enabled_default=False,
@@ -758,7 +783,7 @@ SENSOR_DESCRIPTIONS: tuple[BydSensorDescription, ...] = (
         device_class=SensorDeviceClass.DURATION,
         state_class=SensorStateClass.MEASUREMENT,
         value_fn=lambda obj: (
-            getattr(obj, "remaining_minutes", None) if obj is not None else None
+            None if (m := _estimate_minutes_to_full(obj)) is None else m % 60
         ),
         icon="mdi:clock-outline",
         entity_registry_enabled_default=False,
