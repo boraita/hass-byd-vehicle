@@ -49,10 +49,13 @@ FieldValidator = Callable[[Any, Any], Any]
 def keep_previous_when_zero(previous: Any, current: Any) -> Any:
     """Return *previous* when *current* is zero or None.
 
-    Prevents transient ``0 %`` SOC values from showing in the HA UI
-    when the vehicle sends stale/invalid telemetry.
+    Never surfaces a literal ``0``: when *previous* is also missing or zero
+    (stale cache from a sentinel payload), returns ``None`` so the entity
+    reads as ``unavailable`` instead of pinning to ``0``.
     """
     if current is None or current == 0:
+        if previous is None or previous == 0:
+            return None
         return previous
     return current
 
@@ -1975,13 +1978,16 @@ class BydSensor(BydVehicleEntity, RestoreSensor):
         previous value when the cloud returns a sentinel payload.
         """
         await super().async_added_to_hass()
-        if self.entity_description.validator_fn is None:
+        validator = self.entity_description.validator_fn
+        if validator is None:
             return
         last = await self.async_get_last_sensor_data()
         if last is None:
             return
         restored = last.native_value
         if restored is None:
+            return
+        if validator is keep_previous_when_zero and restored == 0:
             return
         self._last_native_value = restored
 
@@ -2029,7 +2035,9 @@ class BydSensor(BydVehicleEntity, RestoreSensor):
         validator = self.entity_description.validator_fn
         if validator is not None:
             value = validator(self._last_native_value, value)
-        if value is not None:
+        if value is not None and not (
+            validator is keep_previous_when_zero and value == 0
+        ):
             self._last_native_value = value
         return value
 
