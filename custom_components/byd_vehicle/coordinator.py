@@ -60,6 +60,31 @@ _RECOVERABLE_ERRORS = (
     BydEndpointNotSupportedError,
 )
 
+# Per-event whitelist of fields safe to include in the MQTT diagnostic
+# samples surfaced through ``sensor.byd_*_mqtt_event_log``.  Anything not
+# listed here is dropped — keeps personal data (location, VIN tail, etc.)
+# out of the sensor history while still giving enough signal to diagnose
+# command results and state-machine transitions.
+_MQTT_SAMPLE_FIELDS: dict[str, tuple[str, ...]] = {
+    "remoteControl": ("res", "requestSerial"),
+    "vehicleInfo": (
+        "chargingState",
+        "chargeState",
+        "connectState",
+        "elecPercent",
+        "vehicleState",
+        "onlineState",
+    ),
+}
+
+
+def _extract_mqtt_sample_fields(event: str, data: Any) -> dict[str, Any]:
+    """Pick the whitelisted summary fields for an MQTT event payload."""
+    allowed = _MQTT_SAMPLE_FIELDS.get(event)
+    if not allowed or not isinstance(data, dict):
+        return {}
+    return {key: data[key] for key in allowed if key in data}
+
 
 class BydApi:
     """Thin wrapper around the pybyd client.
@@ -138,7 +163,13 @@ class BydApi:
     def _handle_mqtt_event(
         self, event: str, vin: str, respond_data: dict[str, Any]
     ) -> None:
-        """Handle generic MQTT events from pyBYD."""
+        """Handle generic MQTT events from pyBYD.
+
+        Captures per-event counters plus a rolling window of lightweight
+        samples (timestamp, event name, key list, and a whitelisted value
+        summary) for the diagnostic ``mqtt_event_log`` sensor.  Full payloads
+        only land on disk when debug dumps are enabled.
+        """
         self._mqtt_event_counters[event] = self._mqtt_event_counters.get(event, 0) + 1
         keys = sorted(respond_data.keys()) if isinstance(respond_data, dict) else []
         self._mqtt_event_samples.append(
@@ -147,6 +178,7 @@ class BydApi:
                 "event": event,
                 "vin": vin[-6:] if vin else "-",
                 "keys": keys[:20],
+                "summary": _extract_mqtt_sample_fields(event, respond_data),
             }
         )
         if len(self._mqtt_event_samples) > 50:
