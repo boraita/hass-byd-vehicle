@@ -744,6 +744,9 @@ SENSOR_DESCRIPTIONS: tuple[BydSensorDescription, ...] = (
         native_unit_of_measurement=UnitOfTime.HOURS,
         device_class=SensorDeviceClass.DURATION,
         state_class=SensorStateClass.MEASUREMENT,
+        value_fn=lambda obj: (
+            getattr(obj, "remaining_hours", None) if obj is not None else None
+        ),
         icon="mdi:clock-outline",
         entity_registry_enabled_default=False,
         entity_category=EntityCategory.DIAGNOSTIC,
@@ -754,6 +757,9 @@ SENSOR_DESCRIPTIONS: tuple[BydSensorDescription, ...] = (
         native_unit_of_measurement=UnitOfTime.MINUTES,
         device_class=SensorDeviceClass.DURATION,
         state_class=SensorStateClass.MEASUREMENT,
+        value_fn=lambda obj: (
+            getattr(obj, "remaining_minutes", None) if obj is not None else None
+        ),
         icon="mdi:clock-outline",
         entity_registry_enabled_default=False,
         entity_category=EntityCategory.DIAGNOSTIC,
