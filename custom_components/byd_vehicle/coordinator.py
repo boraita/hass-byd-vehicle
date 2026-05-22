@@ -1227,6 +1227,9 @@ class BydDataUpdateCoordinator(DataUpdateCoordinator[VehicleSnapshot]):
         successful ``getGpsInfo`` may be hours old).  Plug-in means the
         car is awake on the cloud, so this is a free opportunity to
         re-anchor the position before the next idle window.
+
+        GPS lives on a sibling coordinator (``BydGpsUpdateCoordinator``)
+        registered on the api, so reach across to fire its fetch.
         """
         try:
             await self.async_fetch_charging()
@@ -1234,12 +1237,14 @@ class BydDataUpdateCoordinator(DataUpdateCoordinator[VehicleSnapshot]):
             _LOGGER.warning(
                 "post-plug charging refresh failed vin=%s err=%s", self._vin, exc
             )
-        try:
-            await self.async_fetch_gps()
-        except Exception as exc:  # noqa: BLE001
-            _LOGGER.warning(
-                "post-plug GPS refresh failed vin=%s err=%s", self._vin, exc
-            )
+        gps_coordinator = self._api._gps_coordinators.get(self._vin)
+        if gps_coordinator is not None:
+            try:
+                await gps_coordinator.async_fetch_gps()
+            except Exception as exc:  # noqa: BLE001
+                _LOGGER.warning(
+                    "post-plug GPS refresh failed vin=%s err=%s", self._vin, exc
+                )
 
     def _maybe_fire_phase_changed(
         self,
