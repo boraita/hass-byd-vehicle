@@ -793,6 +793,9 @@ SENSOR_DESCRIPTIONS: tuple[BydSensorDescription, ...] = (
         native_unit_of_measurement=UnitOfTime.HOURS,
         device_class=SensorDeviceClass.DURATION,
         state_class=SensorStateClass.MEASUREMENT,
+        value_fn=lambda obj: (
+            None if (m := _estimate_minutes_to_full(obj)) is None else m // 60
+        ),
         icon="mdi:clock-outline",
         entity_registry_enabled_default=False,
         entity_category=EntityCategory.DIAGNOSTIC,
@@ -803,29 +806,21 @@ SENSOR_DESCRIPTIONS: tuple[BydSensorDescription, ...] = (
         native_unit_of_measurement=UnitOfTime.MINUTES,
         device_class=SensorDeviceClass.DURATION,
         state_class=SensorStateClass.MEASUREMENT,
+        value_fn=lambda obj: _estimate_minutes_to_full(obj),
         icon="mdi:clock-outline",
         entity_registry_enabled_default=False,
         entity_category=EntityCategory.DIAGNOSTIC,
     ),
-    # Combined ``remaining_hours``/``remaining_minutes`` realtime fields,
-    # rendered as a single ``HH:MM`` string.  Only populates while
-    # actively charging — both source fields are ``-1`` (sentinel)
-    # otherwise, so the sensor stays unavailable instead of showing
-    # ``00:00``.  ``full_hour``/``full_minute`` always read ``-1`` even
-    # mid-charge per the active-charging capture, so they're unused.
+    # Combined remaining time rendered ``HH:MM``.  Uses the same
+    # power-based estimate as the components above so the dashboard
+    # stays coherent.  ``"00:00"`` when not actively charging.
     BydSensorDescription(
         key="charge_remaining_time",
         source="realtime",
-        # No ``available_fn``: report ``"00:00"`` when not charging so the
-        # sensor stays in a meaningful state instead of jumping to
-        # ``unavailable``.  ``remaining_hours``/``remaining_minutes`` are
-        # ``-1`` (normalised to ``None``) when no charge session is active.
         value_fn=lambda obj: (
-            f"{obj.remaining_hours:02d}:{obj.remaining_minutes:02d}"
-            if obj is not None
-            and obj.remaining_hours is not None
-            and obj.remaining_minutes is not None
-            else "00:00"
+            "00:00"
+            if (m := _estimate_minutes_to_full(obj)) is None
+            else f"{m // 60:02d}:{m % 60:02d}"
         ),
         icon="mdi:battery-clock",
         entity_category=EntityCategory.DIAGNOSTIC,

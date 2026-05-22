@@ -11,5 +11,5 @@
   "requirements": [
     "pybyd @ git+https://github.com/boraita/pyBYD@feat/sealion-28-hvac-filter"
   ],
-  "version": "0.0.80-sealion.39"
+  "version": "0.0.80-sealion.40"
 }

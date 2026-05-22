@@ -1221,12 +1221,24 @@ class BydDataUpdateCoordinator(DataUpdateCoordinator[VehicleSnapshot]):
             )
 
     async def _async_post_plug_refresh(self) -> None:
-        """Background: refresh charging snapshot after plug detected."""
+        """Background: refresh charging snapshot + GPS after plug detected.
+
+        GPS often goes stale while the car was parked unplugged (last
+        successful ``getGpsInfo`` may be hours old).  Plug-in means the
+        car is awake on the cloud, so this is a free opportunity to
+        re-anchor the position before the next idle window.
+        """
         try:
             await self.async_fetch_charging()
         except Exception as exc:  # noqa: BLE001
             _LOGGER.warning(
                 "post-plug charging refresh failed vin=%s err=%s", self._vin, exc
+            )
+        try:
+            await self.async_fetch_gps()
+        except Exception as exc:  # noqa: BLE001
+            _LOGGER.warning(
+                "post-plug GPS refresh failed vin=%s err=%s", self._vin, exc
             )
 
     def _maybe_fire_phase_changed(
