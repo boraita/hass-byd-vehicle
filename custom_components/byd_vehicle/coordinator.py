@@ -530,6 +530,13 @@ class BydDataUpdateCoordinator(DataUpdateCoordinator[VehicleSnapshot]):
         self._energy_supported: bool | None = None
         self._charge_session_started_at: datetime | None = None
         self._charge_session_start_soc: float | None = None
+        # When charging transitions ON → OFF mid-session, record the
+        # moment.  ``_track_charge_session`` then waits the coalesce
+        # window before actually closing the session — micro-pauses
+        # during AC slow charge (BYD reports chargingState oscillating
+        # ON/OFF every ~30s while the car deep-sleeps mid-charge) no
+        # longer break a single physical session into many counted ones.
+        self._charging_off_since: datetime | None = None
         self._charge_curve: list[dict[str, Any]] = []
         self._charge_sessions: list[dict[str, Any]] = []
         self._last_mqtt_push_at: datetime | None = None
@@ -1311,12 +1318,26 @@ class BydDataUpdateCoordinator(DataUpdateCoordinator[VehicleSnapshot]):
             new_phase,
         )
 
+    # AC slow charge surfaces micro-pauses in ``charging_state`` every
+    # ~30 seconds (the car deep-sleeps mid-charge and the cloud loses
+    # the chargingState=1 flag temporarily).  Coalesce two ON periods
+    # into the same session if the OFF gap between them is shorter
+    # than this window.  10 min is well above the observed 30-60s
+    # pause cadence and well below any legitimate short-then-restart
+    # scenario.
+    _CHARGE_SESSION_COALESCE_WINDOW_SECONDS = 600
+
     def _track_charge_session(
         self,
         previous: VehicleSnapshot | None,
         current: VehicleSnapshot,
     ) -> None:
-        """Record the timestamp + start SoC when ``charging_state`` -> 1."""
+        """Record the timestamp + start SoC when ``charging_state`` -> 1.
+
+        Coalesces micro-pauses during AC slow charge (see class constant
+        :attr:`_CHARGE_SESSION_COALESCE_WINDOW_SECONDS`): an OFF gap
+        shorter than the window does not end the current session.
+        """
 
         def _is_charging(snap: VehicleSnapshot | None) -> bool:
             if snap is None or snap.charging is None:
@@ -1336,22 +1357,44 @@ class BydDataUpdateCoordinator(DataUpdateCoordinator[VehicleSnapshot]):
                     return float(soc)
             return None
 
+        now = datetime.now(tz=UTC)
         was = _is_charging(previous)
         now_charging = _is_charging(current)
+
         if now_charging and not was:
-            self._charge_session_started_at = datetime.now(tz=UTC)
-            self._charge_session_start_soc = _current_soc(current)
-            self._charge_curve = []
+            # Resume vs new session: if the previous OFF window fell
+            # inside the coalesce budget AND a session was active,
+            # we keep started_at / start_soc / curve intact.
+            within_coalesce = (
+                self._charging_off_since is not None
+                and (now - self._charging_off_since).total_seconds()
+                < self._CHARGE_SESSION_COALESCE_WINDOW_SECONDS
+            )
+            if not (within_coalesce and self._charge_session_started_at is not None):
+                self._charge_session_started_at = now
+                self._charge_session_start_soc = _current_soc(current)
+                self._charge_curve = []
+            self._charging_off_since = None
+
         elif not now_charging and was:
+            # Mark when charging dropped out.  Defer closing the session
+            # until the gap exceeds the coalesce window — see below.
+            self._charging_off_since = now
+
+        # If we're sitting in an OFF window past the coalesce budget,
+        # actually close the session.  Runs on every update so the
+        # timeout fires even without further state transitions.
+        if (
+            self._charging_off_since is not None
+            and not now_charging
+            and self._charge_session_started_at is not None
+            and (now - self._charging_off_since).total_seconds()
+            >= self._CHARGE_SESSION_COALESCE_WINDOW_SECONDS
+        ):
             self._record_finished_session(current, _current_soc(current))
-            # Reset session state whenever charging actually stops, not
-            # only on unplug.  Some VINs never report connect_state=0
-            # cleanly (it stays at 1 across plugged-idle and even after
-            # unplug), which left ``started_at`` / ``soc_added`` stuck
-            # for days.  Treating any True → False charging transition
-            # as the end-of-session keeps the session_* sensors honest.
             self._charge_session_started_at = None
             self._charge_session_start_soc = None
+            self._charging_off_since = None
 
         if now_charging:
             soc = _current_soc(current)
