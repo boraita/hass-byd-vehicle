@@ -431,7 +431,7 @@ class BydDataUpdateCoordinator(DataUpdateCoordinator[VehicleSnapshot]):
     # Override parent annotations: ``data`` is None until first refresh,
     # and we assign ``update_interval = None`` to pause polling (HA
     # accepts None at runtime; the stub doesn't mark it Optional).
-    data: VehicleSnapshot | None  # type: ignore[assignment]
+    data: VehicleSnapshot | None
     update_interval: timedelta | None
 
     def __init__(
@@ -1089,7 +1089,7 @@ class BydGpsUpdateCoordinator(DataUpdateCoordinator[VehicleSnapshot]):
     """
 
     # See note on BydDataUpdateCoordinator above — same parent annotations.
-    data: VehicleSnapshot | None  # type: ignore[assignment]
+    data: VehicleSnapshot | None
     update_interval: timedelta | None
 
     def __init__(
