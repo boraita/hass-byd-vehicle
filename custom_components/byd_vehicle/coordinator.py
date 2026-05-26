@@ -864,8 +864,10 @@ class BydDataUpdateCoordinator(DataUpdateCoordinator[VehicleSnapshot]):
         car = self._car
 
         # --- Realtime ---
+        realtime_fetch_succeeded = False
         try:
             await car.update_realtime()
+            realtime_fetch_succeeded = True
         except _AUTH_ERRORS:
             raise
         except BydEndpointNotSupportedError:
@@ -942,8 +944,14 @@ class BydDataUpdateCoordinator(DataUpdateCoordinator[VehicleSnapshot]):
             snapshot.hvac is not None,
         )
 
-        # Health tracking: a real realtime payload counts as a success.
-        if snapshot.realtime is not None:
+        # Health tracking: only the realtime HTTP fetch actually succeeding
+        # this cycle counts as a success.  Looking at ``snapshot.realtime``
+        # alone is misleading — pyBYD keeps the last successful payload
+        # cached on the BydCar, so the snapshot stays populated across
+        # failures and the cloud_responsive sensor never flips even during
+        # a multi-hour outage (903 consecutive 1008/500 errors observed
+        # 2026-05-25 night without the connectivity binary_sensor noticing).
+        if realtime_fetch_succeeded:
             self._last_successful_fetch_at = datetime.now(tz=UTC)
             self._consecutive_fetch_failures = 0
 
