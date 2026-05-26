@@ -1463,10 +1463,21 @@ class BydDataUpdateCoordinator(DataUpdateCoordinator[VehicleSnapshot]):
 
     @property
     def charge_session_duration_minutes(self) -> int | None:
-        """Minutes elapsed since the last charge session began."""
+        """Minutes elapsed in the current charge session.
+
+        Freezes once ``charging_state`` flips off so the value reads as
+        "how long the actual charge lasted", not "how long ago we started".
+        Without this guard the duration kept growing for the entire
+        coalesce-window-plus-quiet-period after the car finished
+        charging — observed in production where the duration sensor
+        climbed to ``284 min`` ~80 min after a session that really
+        ended at ``204 min``, because no fresh poll arrived to trigger
+        the eventual reset in ``_track_charge_session``.
+        """
         if self._charge_session_started_at is None:
             return None
-        delta = datetime.now(tz=UTC) - self._charge_session_started_at
+        end = self._charging_off_since or datetime.now(tz=UTC)
+        delta = end - self._charge_session_started_at
         return int(delta.total_seconds() // 60)
 
     @property
