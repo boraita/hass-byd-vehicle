@@ -819,7 +819,6 @@ SENSOR_DESCRIPTIONS: tuple[BydSensorDescription, ...] = (
         attr_key="last_energy_fetch_at",
         device_class=SensorDeviceClass.TIMESTAMP,
         icon="mdi:download-circle",
-        entity_registry_enabled_default=False,
         entity_category=EntityCategory.DIAGNOSTIC,
     ),
     BydSensorDescription(
@@ -828,7 +827,6 @@ SENSOR_DESCRIPTIONS: tuple[BydSensorDescription, ...] = (
         source="coordinator",
         attr_key="last_energy_fetch_status",
         icon="mdi:cloud-question",
-        entity_registry_enabled_default=False,
         entity_category=EntityCategory.DIAGNOSTIC,
     ),
     # NOTE: ``charge_state`` (from ``realtime``) and ``charging_state`` (from
