@@ -541,6 +541,14 @@ class BydDataUpdateCoordinator(DataUpdateCoordinator[VehicleSnapshot]):
         self._charge_sessions: list[dict[str, Any]] = []
         self._last_mqtt_push_at: datetime | None = None
         self._last_successful_fetch_at: datetime | None = None
+        # Diagnostic for the manual Fetch energy button — captures
+        # when the button last fired and what BYD answered (ok /
+        # unsupported / error).  Useful because the EnergyConsumption
+        # sensors don't always change visibly (cloud returns same
+        # payload or rejects with code=1001), so without an explicit
+        # attempt timestamp the button looks broken.
+        self._last_energy_fetch_at: datetime | None = None
+        self._last_energy_fetch_status: str | None = None
         self._consecutive_fetch_failures: int = 0
         # Hardening: track whether we've ever received a non-sentinel realtime
         # payload.  Used to (a) skip adaptive backoff during the first 5 min
@@ -1578,6 +1586,21 @@ class BydDataUpdateCoordinator(DataUpdateCoordinator[VehicleSnapshot]):
         return self._last_successful_fetch_at
 
     @property
+    def last_energy_fetch_at(self) -> datetime | None:
+        """Timestamp of the most recent ``Fetch energy data`` attempt."""
+        return self._last_energy_fetch_at
+
+    @property
+    def last_energy_fetch_status(self) -> str | None:
+        """Outcome of the most recent ``Fetch energy data`` attempt.
+
+        One of ``ok`` (snapshot updated), ``unsupported`` (cloud
+        rejected with code=1001 or similar), or ``error`` (generic
+        failure). ``None`` until the first attempt fires.
+        """
+        return self._last_energy_fetch_status
+
+    @property
     def is_cloud_responsive(self) -> bool:
         """Whether the cloud has been responding recently.
 
@@ -1740,9 +1763,11 @@ class BydDataUpdateCoordinator(DataUpdateCoordinator[VehicleSnapshot]):
         """
         if self._car is None:
             return
+        self._last_energy_fetch_at = datetime.now(tz=UTC)
         try:
             result = await self._car.update_energy()
             self._energy_supported = True
+            self._last_energy_fetch_status = "ok"
             nearest = getattr(result, "nearest_energy_consumption", None)
             if nearest is not None:
                 self._energy_distribution_supported = any(
@@ -1762,6 +1787,7 @@ class BydDataUpdateCoordinator(DataUpdateCoordinator[VehicleSnapshot]):
         except BydEndpointNotSupportedError as exc:
             self._energy_supported = False
             self._energy_distribution_supported = False
+            self._last_energy_fetch_status = "unsupported"
             _LOGGER.info(
                 "fetch_energy not supported for this VIN; "
                 "distribution sensors will be skipped: vin=%s, code=%s",
@@ -1769,15 +1795,16 @@ class BydDataUpdateCoordinator(DataUpdateCoordinator[VehicleSnapshot]):
                 getattr(exc, "code", "?"),
             )
         except Exception as exc:  # noqa: BLE001
+            self._last_energy_fetch_status = "error"
             _LOGGER.warning(
                 "Service fetch_energy failed: vin=%s, error=%s",
                 self._vin,
                 exc,
             )
-        # Always propagate — covers the success path AND the unsupported
-        # path (so the user sees the timestamp tick even when the cloud
-        # rejects the call), without firing on the generic-error path
-        # where the prior snapshot is the safest UI to keep.
+        # Always propagate — covers every path so the diagnostic
+        # ``last_energy_fetch_at`` / ``last_energy_fetch_status``
+        # sensors tick on every button press, and the dependent
+        # EnergyConsumption sensors refresh on the success path.
         if self._car is not None:
             self.async_set_updated_data(self._car.state)
 

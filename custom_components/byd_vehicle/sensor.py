@@ -812,6 +812,25 @@ SENSOR_DESCRIPTIONS: tuple[BydSensorDescription, ...] = (
         entity_registry_enabled_default=False,
         entity_category=EntityCategory.DIAGNOSTIC,
     ),
+    BydSensorDescription(
+        key="last_energy_fetch_at",
+        name="Last energy fetch at",
+        source="coordinator",
+        attr_key="last_energy_fetch_at",
+        device_class=SensorDeviceClass.TIMESTAMP,
+        icon="mdi:download-circle",
+        entity_registry_enabled_default=False,
+        entity_category=EntityCategory.DIAGNOSTIC,
+    ),
+    BydSensorDescription(
+        key="last_energy_fetch_status",
+        name="Last energy fetch status",
+        source="coordinator",
+        attr_key="last_energy_fetch_status",
+        icon="mdi:cloud-question",
+        entity_registry_enabled_default=False,
+        entity_category=EntityCategory.DIAGNOSTIC,
+    ),
     # NOTE: ``charge_state`` (from ``realtime``) and ``charging_state`` (from
     # the smart-charging endpoint) report the same numeric value on most
     # VINs, which makes them look duplicated in the UI.  We keep
