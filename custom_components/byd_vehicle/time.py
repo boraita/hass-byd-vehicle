@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import datetime
-from typing import Any
 
 from homeassistant.components.time import TimeEntity
 from homeassistant.config_entries import ConfigEntry
@@ -58,8 +57,9 @@ class BydStartTimeEntity(BydVehicleEntity, TimeEntity):
         """Return the start time."""
         if self._optimistic_state is not None:
             return self._optimistic_state
-        if self.coordinator.data and self.coordinator.data.charging_schedule and self.coordinator.data.charging_schedule.charge:
-            return self.coordinator.data.charging_schedule.charge.start_time
+        data = self.coordinator.data
+        if data and data.charging_schedule and data.charging_schedule.charge:
+            return data.charging_schedule.charge.start_time
         return None
 
     @callback
@@ -98,8 +98,9 @@ class BydEndTimeEntity(BydVehicleEntity, TimeEntity):
         """Return the end time."""
         if self._optimistic_state is not None:
             return self._optimistic_state
-        if self.coordinator.data and self.coordinator.data.charging_schedule and self.coordinator.data.charging_schedule.charge:
-            return self.coordinator.data.charging_schedule.charge.end_time
+        data = self.coordinator.data
+        if data and data.charging_schedule and data.charging_schedule.charge:
+            return data.charging_schedule.charge.end_time
         return None
 
     @callback
