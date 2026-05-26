@@ -688,6 +688,14 @@ SENSOR_DESCRIPTIONS: tuple[BydSensorDescription, ...] = (
         entity_registry_enabled_default=False,
         entity_category=EntityCategory.DIAGNOSTIC,
     ),
+    # The charge_session_* family is only meaningful while a session is
+    # actually in progress.  When there's no session the coordinator
+    # properties return None, but with ``validator_fn=keep_previous_when_zero``
+    # the RestoreSensor preserved the prior session's value across HA
+    # restarts (saw duration=593 / soc_added=11 / kwh_added=9.07 lingering
+    # for days on a Sealion 7 EU well after the charge ended).  Gate
+    # availability on the live ``charge_session_started_at`` instead so
+    # the entity reads ``unavailable`` between sessions.
     BydSensorDescription(
         key="charge_session_duration",
         name="Charge session duration",
@@ -696,7 +704,9 @@ SENSOR_DESCRIPTIONS: tuple[BydSensorDescription, ...] = (
         native_unit_of_measurement=UnitOfTime.MINUTES,
         icon="mdi:timer",
         entity_registry_enabled_default=False,
-        validator_fn=keep_previous_when_zero,
+        available_fn=lambda c: (
+            c is not None and getattr(c, "charge_session_started_at", None) is not None
+        ),
     ),
     BydSensorDescription(
         key="charge_session_soc_added",
@@ -706,7 +716,9 @@ SENSOR_DESCRIPTIONS: tuple[BydSensorDescription, ...] = (
         native_unit_of_measurement=PERCENTAGE,
         icon="mdi:battery-arrow-up",
         entity_registry_enabled_default=False,
-        validator_fn=keep_previous_when_zero,
+        available_fn=lambda c: (
+            c is not None and getattr(c, "charge_session_started_at", None) is not None
+        ),
     ),
     BydSensorDescription(
         key="charge_session_kwh_added",
@@ -718,7 +730,9 @@ SENSOR_DESCRIPTIONS: tuple[BydSensorDescription, ...] = (
         state_class=SensorStateClass.TOTAL,
         icon="mdi:lightning-bolt-circle",
         entity_registry_enabled_default=False,
-        validator_fn=keep_previous_when_zero,
+        available_fn=lambda c: (
+            c is not None and getattr(c, "charge_session_started_at", None) is not None
+        ),
     ),
     BydSensorDescription(
         key="time_until_full",
