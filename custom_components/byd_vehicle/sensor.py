@@ -139,6 +139,26 @@ class BydSensorDescription(SensorEntityDescription):
     even when the source object exists (e.g. for the schedule-end-time
     sensor when the schedule is set to charge until full)."""
 
+    state_change_gate: Callable[[Any], bool] | None = None
+    """Predicate that suppresses state changes while it returns ``True``.
+
+    Called with the BydSensor entity on every resolution.  When it
+    returns ``True`` the entity keeps reporting its previous value
+    instead of the newly computed one — useful when a derived consumer
+    is going to interpret deltas during certain periods incorrectly.
+
+    Concrete case: downstream telemetry consumers (ABRP, Teslamate-style
+    trackers, etc.) compute total trip distance from
+    ``sum(delta(odometer))`` and average speed from
+    ``delta(odometer)/delta(time)``.  The BYD API only reports integer
+    kilometre values for the odometer, so each transition arrives as a
+    1-2 km jump every 30-60 s.  A consumer pushed those raw values
+    every 10 s reads back ``2181 km`` in a 4-hour day where the car
+    really did ~350 km (verified on the user's 2026-05-25 trip
+    summary).  Holding the published value constant during the trip
+    and only re-snapshotting once the trip ends gives the consumer
+    one clean delta per trip — distance and speed both come out right."""
+
 
 def _round_int_attr(attr: str) -> Callable[[Any], int | None]:
     """Create a converter that rounds a numeric attribute to an integer."""
@@ -443,6 +463,35 @@ SENSOR_DESCRIPTIONS: tuple[BydSensorDescription, ...] = (
         state_class=SensorStateClass.TOTAL_INCREASING,
         icon="mdi:counter",
         value_fn=_round_int_attr("total_mileage"),
+    ),
+    # Companion odometer for downstream telemetry consumers.  The raw
+    # ``total_mileage`` ticks in 1-2 km increments every 30-60 s
+    # because the BYD API only exposes integer kilometres.  A consumer
+    # pushed those values every 10 s (ABRP default) reads back wildly
+    # inflated totals — one user's 2026-05-25 trip showed up as 2181 km
+    # / 4h on ABRP for a real ~350 km / 4h day.
+    #
+    # ``state_change_gate`` keeps this entity sticky while
+    # ``realtime.is_vehicle_on`` is True: a single delta per trip
+    # (snapshot at trip start → next snapshot when the car powers off)
+    # gives the consumer the right distance and speed without
+    # interpolating fake decimals.  Disabled by default; users with
+    # telemetry integrations repoint ABRP at this entity.
+    BydSensorDescription(
+        key="total_mileage_smoothed",
+        source="realtime",
+        native_unit_of_measurement=UnitOfLength.KILOMETERS,
+        suggested_display_precision=0,
+        device_class=SensorDeviceClass.DISTANCE,
+        state_class=SensorStateClass.TOTAL_INCREASING,
+        icon="mdi:counter",
+        value_fn=_round_int_attr("total_mileage"),
+        state_change_gate=lambda entity: bool(
+            entity._get_realtime()
+            and getattr(entity._get_realtime(), "is_vehicle_on", False)
+        ),
+        entity_registry_enabled_default=False,
+        entity_category=EntityCategory.DIAGNOSTIC,
     ),
     BydSensorDescription(
         key="speed",
@@ -2015,6 +2064,10 @@ class BydSensor(BydVehicleEntity, RestoreSensor):
         self._vehicle = vehicle
         self._attr_unique_id = f"{vin}_{description.source}_{description.key}"
         self._last_native_value: Any | None = None
+        # When rate_limit_seconds is set, track when the published state
+        # last changed so the limiter can decide whether to gate the
+        # next computed value.  Restored from RestoreEntity below.
+        self._last_native_value_at: datetime | None = None
 
         # Auto-disable sensors that return no data on first fetch.
         if description.entity_registry_enabled_default is not False:
@@ -2027,12 +2080,21 @@ class BydSensor(BydVehicleEntity, RestoreSensor):
         The restored value seeds ``_last_native_value`` so that the first
         post-restart coordinator update can still fall through to the
         previous value when the cloud returns a sentinel payload.
+
+        Restoring ``_last_native_value_at`` from the recorded ``last_changed``
+        keeps the rate-limit budget consistent across restarts: a sensor
+        that legitimately settled into ``rate_limit_seconds=300`` mode
+        won't suddenly release a backlog of changes just because HA
+        restarted in the middle of its quiet window.
         """
         await super().async_added_to_hass()
         validator = self.entity_description.validator_fn
+        last = await self.async_get_last_sensor_data()
+        last_state = await self.async_get_last_state()
+        if last_state is not None and last_state.last_changed is not None:
+            self._last_native_value_at = last_state.last_changed
         if validator is None:
             return
-        last = await self.async_get_last_sensor_data()
         if last is None:
             return
         restored = last.native_value
@@ -2086,9 +2148,25 @@ class BydSensor(BydVehicleEntity, RestoreSensor):
         validator = self.entity_description.validator_fn
         if validator is not None:
             value = validator(self._last_native_value, value)
+
+        # State-change gate: if the predicate currently returns True,
+        # keep reporting the previous value instead of publishing the
+        # new computed one.  See the field docstring for the rationale
+        # (consumer-derived deltas during trips, etc.).
+        gate = self.entity_description.state_change_gate
+        if (
+            gate is not None
+            and self._last_native_value is not None
+            and value != self._last_native_value
+            and gate(self)
+        ):
+            return self._last_native_value
+
         if value is not None and not (
             validator is keep_previous_when_zero and value == 0
         ):
+            if value != self._last_native_value:
+                self._last_native_value_at = datetime.now(tz=UTC)
             self._last_native_value = value
         return value
 
