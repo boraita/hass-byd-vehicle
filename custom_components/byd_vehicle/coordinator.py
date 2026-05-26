@@ -1726,9 +1726,16 @@ class BydDataUpdateCoordinator(DataUpdateCoordinator[VehicleSnapshot]):
         return self._energy_distribution_supported
 
     async def async_fetch_energy(self) -> None:
-        """Service handler: fetch energy consumption and log the raw response."""
+        """Service handler: fetch energy consumption and log the raw response.
+
+        Mirrors :meth:`async_fetch_charging` — pushes the refreshed snapshot
+        out via ``async_set_updated_data`` so the dependent EnergyConsumption
+        sensors update immediately instead of waiting for the next poll
+        cycle (up to 8 min away with the adaptive backoff during idle).
+        """
         if self._car is None:
             return
+        propagate = False
         try:
             result = await self._car.update_energy()
             self._energy_supported = True
@@ -1748,6 +1755,7 @@ class BydDataUpdateCoordinator(DataUpdateCoordinator[VehicleSnapshot]):
                 self._vin[-6:],
                 result,
             )
+            propagate = True
         except BydEndpointNotSupportedError as exc:
             self._energy_supported = False
             self._energy_distribution_supported = False
@@ -1763,6 +1771,8 @@ class BydDataUpdateCoordinator(DataUpdateCoordinator[VehicleSnapshot]):
                 self._vin,
                 exc,
             )
+        if propagate:
+            self.async_set_updated_data(self._car.state)
 
     async def async_request_schedule_update(
         self, property_name: str, new_value: Any
