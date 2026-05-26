@@ -456,6 +456,12 @@ class BydDataUpdateCoordinator(DataUpdateCoordinator[VehicleSnapshot]):
         self._force_next_refresh = False
         self._car: BydCar | None = None
         self._realtime_endpoint_unsupported: bool = False
+        # ``getEnergyConsumption`` returns ``code=1001`` on several VINs
+        # (notably the Sealion 7 EU trim).  pyBYD translates that to
+        # ``BydEndpointNotSupportedError``; we record it here so the
+        # service handler only logs the warning once instead of on
+        # every press of the fetch button.
+        self._energy_endpoint_unsupported: bool = False
         self._cancel_hvac_final_retry: CALLBACK_TYPE | None = None
         self.update_pending: bool = False
         self._debounce_timer: CALLBACK_TYPE | None = None
@@ -637,7 +643,10 @@ class BydDataUpdateCoordinator(DataUpdateCoordinator[VehicleSnapshot]):
         previous_snapshot = self.data
 
         if self.update_pending:
-            _LOGGER.debug("Skipping telemetry refresh due to pending schedule update: vin=%s", self._vin[-6:])
+            _LOGGER.debug(
+                "Skipping telemetry refresh due to pending schedule update: vin=%s",
+                self._vin[-6:],
+            )
             if self.data is not None:
                 return self.data
             return VehicleSnapshot(vehicle=self._vehicle)
@@ -833,24 +842,49 @@ class BydDataUpdateCoordinator(DataUpdateCoordinator[VehicleSnapshot]):
             )
 
     async def async_fetch_energy(self) -> None:
-        """Service handler: fetch energy consumption and log the raw response."""
+        """Service handler: fetch energy consumption and log the raw response.
+
+        ``getEnergyConsumption`` is one of the endpoints BYD's cloud
+        marks as ``code=1001`` on some VINs (pyBYD translates that to
+        :class:`BydEndpointNotSupportedError`).  When that happens the
+        ``energy_last_50km_*`` sensors will never populate from this
+        endpoint, so we log the warning once and bail quietly on
+        subsequent presses instead of spamming on every retry.
+        """
         if self._car is None:
             return
         try:
             result = await self._car.update_energy()
-            _LOGGER.info(
-                "fetch_energy result: vin=%s, payload=%s",
-                self._vin[-6:],
-                result,
-            )
+        except BydEndpointNotSupportedError as exc:
+            if not self._energy_endpoint_unsupported:
+                _LOGGER.warning(
+                    "Energy endpoint not supported for vin=%s — "
+                    "energy_last_50km_* sensors will stay unavailable "
+                    "(logged once only): %s",
+                    self._vin,
+                    exc,
+                )
+                self._energy_endpoint_unsupported = True
+            return
         except Exception as exc:  # noqa: BLE001
             _LOGGER.warning(
                 "Service fetch_energy failed: vin=%s, error=%s",
                 self._vin,
                 exc,
             )
+            return
+        # Success: clear the unsupported flag in case the VIN's
+        # capability changed (e.g. after a TBOX firmware update).
+        self._energy_endpoint_unsupported = False
+        _LOGGER.info(
+            "fetch_energy result: vin=%s, payload=%s",
+            self._vin[-6:],
+            result,
+        )
 
-    async def async_request_schedule_update(self, property_name: str, new_value: Any) -> None:
+    async def async_request_schedule_update(
+        self, property_name: str, new_value: Any
+    ) -> None:
         """Queue a debounced update for the charging schedule."""
         self._pending_schedule_updates[property_name] = new_value
 
@@ -883,35 +917,43 @@ class BydDataUpdateCoordinator(DataUpdateCoordinator[VehicleSnapshot]):
         current_end_time = "full"
         current_charge_way = "e"
 
-        if self.data and self.data.charging_schedule and self.data.charging_schedule.charge:
+        if (
+            self.data
+            and self.data.charging_schedule
+            and self.data.charging_schedule.charge
+        ):
             charge = self.data.charging_schedule.charge
             if charge.status is not None:
                 current_enabled = charge.status
             if charge.charge_until_full is not None:
                 current_charge_to_full = charge.charge_until_full
-            
+
             if charge.start_time is not None:
                 current_start_time = charge.start_time.strftime("%H:%M")
             if charge.end_time is not None:
                 current_end_time = charge.end_time.strftime("%H:%M")
-                
+
             if charge.charge_way is not None:
                 current_charge_way = charge.charge_way
 
         updates = self._pending_schedule_updates
-        
+
         enabled = updates.get("enabled", current_enabled)
         charge_to_full = updates.get("charge_to_full", current_charge_to_full)
         pattern = updates.get("pattern", current_charge_way)
         start_time_obj = updates.get("start_time")
         end_time_obj = updates.get("end_time")
 
-        start_charge_time = start_time_obj.strftime("%H:%M") if start_time_obj else current_start_time
-        
+        start_charge_time = (
+            start_time_obj.strftime("%H:%M") if start_time_obj else current_start_time
+        )
+
         if charge_to_full:
             end_charge_time = "full"
         else:
-            end_charge_time = end_time_obj.strftime("%H:%M") if end_time_obj else current_end_time
+            end_charge_time = (
+                end_time_obj.strftime("%H:%M") if end_time_obj else current_end_time
+            )
             if end_charge_time == "full":
                 end_charge_time = "06:00"
 
