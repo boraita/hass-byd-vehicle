@@ -1732,10 +1732,14 @@ class BydDataUpdateCoordinator(DataUpdateCoordinator[VehicleSnapshot]):
         out via ``async_set_updated_data`` so the dependent EnergyConsumption
         sensors update immediately instead of waiting for the next poll
         cycle (up to 8 min away with the adaptive backoff during idle).
+
+        Always propagates at the end so the user sees visual feedback
+        (sensor ``last_reported`` ticks) even when the endpoint is
+        unsupported on this VIN — otherwise the button looks broken on
+        e.g. Sealion 7 EU where the cloud returns ``code=1001``.
         """
         if self._car is None:
             return
-        propagate = False
         try:
             result = await self._car.update_energy()
             self._energy_supported = True
@@ -1755,7 +1759,6 @@ class BydDataUpdateCoordinator(DataUpdateCoordinator[VehicleSnapshot]):
                 self._vin[-6:],
                 result,
             )
-            propagate = True
         except BydEndpointNotSupportedError as exc:
             self._energy_supported = False
             self._energy_distribution_supported = False
@@ -1771,7 +1774,11 @@ class BydDataUpdateCoordinator(DataUpdateCoordinator[VehicleSnapshot]):
                 self._vin,
                 exc,
             )
-        if propagate:
+        # Always propagate — covers the success path AND the unsupported
+        # path (so the user sees the timestamp tick even when the cloud
+        # rejects the call), without firing on the generic-error path
+        # where the prior snapshot is the safest UI to keep.
+        if self._car is not None:
             self.async_set_updated_data(self._car.state)
 
     async def async_request_schedule_update(
