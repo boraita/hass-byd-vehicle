@@ -69,9 +69,27 @@ class BydLock(BydActionEntity, LockEntity):
 
     @property
     def assumed_state(self) -> bool:
-        """Return True when lock state is assumed (no realtime data)."""
+        """Return True when lock state is assumed.
+
+        Triggers in two cases:
+
+        - The realtime payload is missing or doesn't carry an
+          ``is_locked`` flag (deep sleep / fresh integration setup).
+        - The vehicle is currently powered on.  BYD reports
+          ``is_locked=True`` while the car is in motion because the
+          factory auto-lock kicks in past ~5 km/h.  Without this
+          guard the HA lock entity renders as fully ``locked`` during
+          a trip — frontend cards then grey out the **lock** button
+          ("already in target state") and the user has to fire
+          ``lock.unlock`` → ``lock.lock`` to actually relock on park.
+          Marking it assumed keeps both buttons actionable, matching
+          the way the official BYD app exposes the control while
+          driving.
+        """
         realtime = self._get_realtime()
-        return realtime is None or realtime.is_locked is None
+        if realtime is None or realtime.is_locked is None:
+            return True
+        return bool(getattr(realtime, "is_vehicle_on", False))
 
     async def async_lock(self, **_: Any) -> None:
         """Lock the vehicle."""
