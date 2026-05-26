@@ -1014,6 +1014,12 @@ class BydDataUpdateCoordinator(DataUpdateCoordinator[VehicleSnapshot]):
     # first 5 minutes so a deep-sleep car doesn't strand us on stale data.
     _STARTUP_AGGRESSIVE_WINDOW = timedelta(minutes=5)
 
+    # Below this instantaneous battery power (W), an active charge is
+    # considered "AC slow" — SOC rises ~1% every ~12 min, so a 1×
+    # cadence wastes calls.  Threshold sits between Schuko (~2.3 kW)
+    # and the smallest DC fast chargers (~25 kW).
+    _AC_SLOW_CHARGE_THRESHOLD_W = 5000.0
+
     def _is_sentinel_payload(self, snapshot: VehicleSnapshot | None) -> bool:
         """Whether the realtime payload looks like a "sleeping car" sentinel.
 
@@ -1034,7 +1040,9 @@ class BydDataUpdateCoordinator(DataUpdateCoordinator[VehicleSnapshot]):
         """Return the next telemetry interval based on the current snapshot.
 
         Multipliers (applied to the user-configured ``_fixed_interval``):
-          * 1×   — actively charging OR vehicle on (driving / climate active)
+          * 1×   — driving OR fast-charging (vehicle on / DC charge)
+          * 4×   — AC slow-charging (|battery_power| below
+            :attr:`_AC_SLOW_CHARGE_THRESHOLD_W`)
           * 2×   — plugged & waiting (schedule pending or connector locked)
           * 4×   — online idle (cable in, no schedule, no charge)
           * 8×   — offline / sleeping
@@ -1049,12 +1057,26 @@ class BydDataUpdateCoordinator(DataUpdateCoordinator[VehicleSnapshot]):
         else:
             realtime = snapshot.realtime
             charging = snapshot.charging
-            if charging is not None and getattr(charging, "charging_state", None) == 1:
+            is_active_charge = (
+                charging is not None
+                and getattr(charging, "charging_state", None) == 1
+            ) or getattr(realtime, "is_charging", None) is True
+            is_vehicle_on = getattr(realtime, "is_vehicle_on", None) is True
+            if is_active_charge or is_vehicle_on:
                 multiplier = 1
-            elif getattr(realtime, "is_charging", None) is True:
-                multiplier = 1
-            elif getattr(realtime, "is_vehicle_on", None) is True:
-                multiplier = 1
+                if is_active_charge and not is_vehicle_on:
+                    power_w = getattr(realtime, "gl", None)
+                    try:
+                        power_abs = (
+                            abs(float(power_w)) if power_w is not None else None
+                        )
+                    except (TypeError, ValueError):
+                        power_abs = None
+                    if (
+                        power_abs is not None
+                        and power_abs < self._AC_SLOW_CHARGE_THRESHOLD_W
+                    ):
+                        multiplier = 4
             elif charging is not None and (
                 getattr(charging, "wait_status", None) == 1
                 or getattr(charging, "charging_state", None) == 9
