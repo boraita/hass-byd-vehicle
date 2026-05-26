@@ -1336,14 +1336,14 @@ class BydDataUpdateCoordinator(DataUpdateCoordinator[VehicleSnapshot]):
             self._charge_curve = []
         elif not now_charging and was:
             self._record_finished_session(current, _current_soc(current))
-            connect_state = (
-                getattr(current.charging, "connect_state", None)
-                if current.charging
-                else None
-            )
-            if connect_state == 0:
-                self._charge_session_started_at = None
-                self._charge_session_start_soc = None
+            # Reset session state whenever charging actually stops, not
+            # only on unplug.  Some VINs never report connect_state=0
+            # cleanly (it stays at 1 across plugged-idle and even after
+            # unplug), which left ``started_at`` / ``soc_added`` stuck
+            # for days.  Treating any True → False charging transition
+            # as the end-of-session keeps the session_* sensors honest.
+            self._charge_session_started_at = None
+            self._charge_session_start_soc = None
 
         if now_charging:
             soc = _current_soc(current)
