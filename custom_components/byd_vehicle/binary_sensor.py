@@ -55,6 +55,29 @@ def _attr_truthy(attr_name: str) -> Callable[[Any], bool | None]:
     return _fn
 
 
+def _attr_truthy_online_only(attr_name: str) -> Callable[[Any], bool | None]:
+    """Return a value_fn that's only trusted while the vehicle is online.
+
+    BYD's cloud snapshot can flip latched state flags (sentry, etc.)
+    back to ``0`` whenever the T-Box drops off the network, even though
+    the underlying physical state didn't change.  Returning ``None``
+    when offline makes the binary sensor base class fall back to its
+    cached ``_last_is_on`` instead of publishing a misleading ``off``.
+    """
+
+    def _fn(obj: Any) -> bool | None:
+        if obj is None:
+            return None
+        if getattr(obj, "is_online", True) is False:
+            return None
+        val = getattr(obj, attr_name, None)
+        if val is None:
+            return None
+        return bool(val)
+
+    return _fn
+
+
 def _attr_equals(attr_name: str, target: Any) -> Callable[[Any], bool | None]:
     """Return a value_fn that checks ``getattr(obj, attr_name) == target``."""
 
@@ -185,7 +208,7 @@ BINARY_SENSOR_DESCRIPTIONS: tuple[BydBinarySensorDescription, ...] = (
         key="sentry_status",
         source="realtime",
         icon="mdi:shield-car",
-        value_fn=_attr_truthy("sentry_status"),
+        value_fn=_attr_truthy_online_only("sentry_status"),
     ),
     # ====================================
     # Individual doors (disabled)
