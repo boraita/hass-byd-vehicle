@@ -1851,7 +1851,6 @@ SENSOR_DESCRIPTIONS: tuple[BydSensorDescription, ...] = (
         device_class=SensorDeviceClass.ENUM,
         options=["off", "standby", "armed"],
         icon="mdi:shield-car",
-        entity_registry_enabled_default=False,
         entity_category=EntityCategory.DIAGNOSTIC,
     ),
     BydSensorDescription(
