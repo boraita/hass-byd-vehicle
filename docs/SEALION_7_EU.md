@@ -2,6 +2,22 @@
 
 Field-tested observations from running this integration against a BYD Sealion 7 Comfort 2024 EU (Spain) over a 30-day window.  Useful reference for owners of the same trim and a starting point for other Sealion 7 variants.
 
+## Skylight sensor reflects the interior sunroof curtain, not the glass
+
+The glass panoramic roof is fixed on this trim — it does not open.  The interior **motorised sunshade curtain** does, and that is what the `binary_sensor.byd_*_skylight` sensor actually tracks (`off`=closed, `on`=open).
+
+Live test on the Sealion 7 Comfort 2024 EU:
+
+- Open the curtain manually from the headliner button → `skylight` flips to `on`.
+- Press **Close windows** in HA → BYD's `CLOSE_WINDOWS` (functionNo 1026) closes the four side windows **and** the sunshade curtain, and `skylight` returns to `off`.
+
+What the API does **not** expose:
+
+- An "open curtain" command.  There is no `OPEN_SUNROOF` / `OPEN_SHADE` capability in this VIN's `cfFixedList`, so the curtain can only be opened from inside the car.
+- Independent control of the curtain (close-only piggybacks on `CLOSE_WINDOWS`).
+
+The friendly name for this sensor on our HA install has been renamed to **"Cortinilla techo"** to make the meaning explicit, and the `close_windows` button is labelled **"Cerrar ventanas + cortinilla"** to reflect what it actually does.
+
 ## Always-unknown entities (BYD cloud doesn't populate the field)
 
 The following entities are permanently `unknown` because BYD's cloud doesn't populate the underlying field on this trim:
