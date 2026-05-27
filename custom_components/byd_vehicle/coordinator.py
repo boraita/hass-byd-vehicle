@@ -1668,7 +1668,13 @@ class BydDataUpdateCoordinator(DataUpdateCoordinator[VehicleSnapshot]):
     # ------------------------------------------------------------------
 
     async def async_fetch_realtime(self) -> None:
-        """Service handler: fetch fresh realtime via BydCar."""
+        """Service handler: fetch fresh realtime via BydCar.
+
+        Mirrors :meth:`async_fetch_charging` — pushes the refreshed
+        snapshot via ``async_set_updated_data`` so dependent sensors
+        refresh immediately instead of waiting for the next adaptive
+        poll cycle (which can be 8 min away during idle/sleep buckets).
+        """
         if self._car is None:
             return
         try:
@@ -1678,6 +1684,7 @@ class BydDataUpdateCoordinator(DataUpdateCoordinator[VehicleSnapshot]):
                 self._vin[-6:],
                 result,
             )
+            self.async_set_updated_data(self._car.state)
         except Exception as exc:  # noqa: BLE001
             _LOGGER.warning(
                 "Service fetch_realtime failed: vin=%s, error=%s",
@@ -1686,7 +1693,12 @@ class BydDataUpdateCoordinator(DataUpdateCoordinator[VehicleSnapshot]):
             )
 
     async def async_fetch_hvac(self) -> None:
-        """Service handler: fetch fresh HVAC via BydCar."""
+        """Service handler: fetch fresh HVAC via BydCar.
+
+        Mirrors :meth:`async_fetch_charging` — propagates the refreshed
+        snapshot so HVAC-derived sensors (wind position, recirculation,
+        target temperature) refresh immediately on demand.
+        """
         if self._car is None:
             return
         try:
@@ -1696,6 +1708,7 @@ class BydDataUpdateCoordinator(DataUpdateCoordinator[VehicleSnapshot]):
                 self._vin[-6:],
                 result,
             )
+            self.async_set_updated_data(self._car.state)
         except Exception as exc:  # noqa: BLE001
             _LOGGER.warning(
                 "Service fetch_hvac failed: vin=%s, error=%s",
