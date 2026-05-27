@@ -513,6 +513,46 @@ SENSOR_DESCRIPTIONS: tuple[BydSensorDescription, ...] = (
         ),
         validator_fn=keep_previous_when_zero,
     ),
+    # Per-window opening percentage (0-100).  Sealion 7 EU reports 10
+    # after the OPEN_WINDOWS vent command and 100 on full drop.  Off
+    # by default — most users only care about the boolean state
+    # exposed by the matching binary_sensor.
+    BydSensorDescription(
+        key="left_front_window_pct",
+        source="realtime",
+        native_unit_of_measurement=PERCENTAGE,
+        state_class=SensorStateClass.MEASUREMENT,
+        icon="mdi:car-door",
+        entity_registry_enabled_default=False,
+        entity_category=EntityCategory.DIAGNOSTIC,
+    ),
+    BydSensorDescription(
+        key="right_front_window_pct",
+        source="realtime",
+        native_unit_of_measurement=PERCENTAGE,
+        state_class=SensorStateClass.MEASUREMENT,
+        icon="mdi:car-door",
+        entity_registry_enabled_default=False,
+        entity_category=EntityCategory.DIAGNOSTIC,
+    ),
+    BydSensorDescription(
+        key="left_rear_window_pct",
+        source="realtime",
+        native_unit_of_measurement=PERCENTAGE,
+        state_class=SensorStateClass.MEASUREMENT,
+        icon="mdi:car-door",
+        entity_registry_enabled_default=False,
+        entity_category=EntityCategory.DIAGNOSTIC,
+    ),
+    BydSensorDescription(
+        key="right_rear_window_pct",
+        source="realtime",
+        native_unit_of_measurement=PERCENTAGE,
+        state_class=SensorStateClass.MEASUREMENT,
+        icon="mdi:car-door",
+        entity_registry_enabled_default=False,
+        entity_category=EntityCategory.DIAGNOSTIC,
+    ),
     # Tire pressures – unit resolved dynamically from tire_press_unit;
     # kPa is the default because most BYD vehicles report tirePressUnit=3.
     BydSensorDescription(
