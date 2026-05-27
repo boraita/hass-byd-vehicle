@@ -1977,6 +1977,37 @@ _LEGACY_SENSOR_UNIQUE_ID_REMOVALS: frozenset[str] = frozenset(
     }
 )
 
+# Sensor descriptor ``key`` values that are known to be permanently
+# unknown on specific VIN prefixes — BYD's cloud does not populate the
+# underlying field on that trim, ever.  Skip registration AND remove any
+# stale registry entries from older versions where the entity existed.
+#
+# Each mapping is ``vin_prefix -> {sensor_key, ...}``.  VIN prefix match
+# is exact-startswith so longer prefixes can be added for sub-trims later
+# without touching shorter ones.
+_VIN_PREFIX_UNSUPPORTED_SENSOR_KEYS: dict[str, frozenset[str]] = {
+    # BYD Sealion 7 Comfort 2024 EU — confirmed over a 30-day capture:
+    #   * ``power_battery`` (realtime) — field never present in payload
+    #   * ``gps_speed`` (gps) — BYD's /getGpsInfo returns ``speed: null``
+    # Both are normally entity_registry_enabled_default=False, but users
+    # who enabled them get a permanent ``unknown`` entity that adds no
+    # information.  Skip outright.
+    "LGXCH4": frozenset(
+        {
+            "power_battery",
+            "gps_speed",
+        }
+    ),
+}
+
+
+def _sensor_unsupported_for_vin(vin: str, key: str) -> bool:
+    """Return True when ``key`` is unsupported for any matching VIN prefix."""
+    for prefix, keys in _VIN_PREFIX_UNSUPPORTED_SENSOR_KEYS.items():
+        if vin.startswith(prefix) and key in keys:
+            return True
+    return False
+
 
 async def async_setup_entry(
     hass: HomeAssistant,
@@ -2028,6 +2059,17 @@ async def async_setup_entry(
                 and description.attr_key
                 and description.attr_key.endswith("_distribution")
             ):
+                stale_uid = f"{vin}_{description.source}_{description.key}"
+                stale = registry.async_get_entity_id("sensor", DOMAIN, stale_uid)
+                if stale:
+                    registry.async_remove(stale)
+                continue
+            # Skip sensors that we have empirically confirmed never
+            # populate on this VIN prefix (BYD cloud doesn't ship the
+            # underlying field).  Also clean up the stale registry
+            # entry from older versions so a re-install doesn't leave
+            # a permanent ``unknown`` entity on the device card.
+            if _sensor_unsupported_for_vin(vin, description.key):
                 stale_uid = f"{vin}_{description.source}_{description.key}"
                 stale = registry.async_get_entity_id("sensor", DOMAIN, stale_uid)
                 if stale:
