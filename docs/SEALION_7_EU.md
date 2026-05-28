@@ -2,6 +2,18 @@
 
 Field-tested observations from running this integration against a BYD Sealion 7 Comfort 2024 EU (Spain) over a 30-day window.  Useful reference for owners of the same trim and a starting point for other Sealion 7 variants.
 
+## No partial / per-window open control
+
+`OPEN_WINDOWS` (functionNo `10020005`) opens **all four windows together** to the same `~10 %` vent crack.  There is no remote command to:
+
+- Open a single window (driver / passenger / either rear).
+- Choose the opening percentage (only the fixed `~10 %` crack is exposed).
+- Drop windows fully (BYD only exposes the vent crack as a remote operation).
+
+This is confirmed not as a pyBYD limitation but as a hard cap of BYD's cloud API: the **official BYD mobile app cannot do it either** — fully dropping a window or operating individual ones is only available from the physical button switches inside the car.
+
+`vehicleFunLearnInfo` on Sealion 7 Comfort 2024 EU shows a related capability flag — `openWindow499LearnInfo: 1` — whose payload remains undocumented as of 2026-05.  If future research uncovers what the "499" variant accepts (e.g. a percentage or a `windowId`), this is the place to plug a richer command.
+
 ## Skylight sensor reflects the interior sunroof curtain, not the glass
 
 The glass panoramic roof is fixed on this trim — it does not open.  The interior **motorised sunshade curtain** does, and that is what the `binary_sensor.byd_*_skylight` sensor actually tracks (`off`=closed, `on`=open).
