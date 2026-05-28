@@ -2,6 +2,48 @@
 
 Field-tested observations from running this integration against a BYD Sealion 7 Comfort 2024 EU (Spain) over a 30-day window.  Useful reference for owners of the same trim and a starting point for other Sealion 7 variants.
 
+## Discovered BYD endpoints not yet implemented in pyBYD
+
+Catalogue of POST endpoints extracted from the official BYD overseas app
+APK ([jkaberg/byd-react-app-reverse#1](https://github.com/jkaberg/byd-react-app-reverse/issues/1)
+comment by `zwcall`).  None of these are wired into pyBYD as of writing —
+parked here so future research has a starting point instead of an issue.
+
+**Share Access / temporary key lending** (capability flagged in
+`vehicleFunLearnInfo.bookingCar = 1`):
+
+- `app/rental/vehicle/bind` — most likely entry point for granting
+  someone temporary access to the car ("rental" is BYD's internal
+  term for non-primary users).
+- `control/appBindingVehicle` — primary owner binding.
+- `vehicle/vehicleswitch/updatePermissionInfo` — likely the per-user
+  permission mask (geofence, speed cap, time window).
+
+**NFC digital key** (flagged via `nfcLearnInfo`, `nfcDigitalLearnInfo`,
+`nfcUwbSwLearnInfo` all = 1 on this VIN):
+
+- `nfc/v2/klist` — list paired keys (GET-equivalent, read-only).
+- `nfc/app/v1/c3/pairing` + `pairingpassword` — pair a new key.
+- `nfc/app/v1/c3/isPaired` / `isCanPass` / `preopeningCheck` — status
+  checks.
+- `nfc/app/v1/c3/changeOwnerDevice` — transfer ownership.
+- `nfc/app/v1/delete` — revoke a key.
+
+Schemas for the request bodies are not in the public source.  Two safe
+discovery paths from here:
+
+1. Decompile the BYD Android app (`com.byd.bydautolink`) with
+   `apktool` + `jadx` and grep the Retrofit interfaces for the
+   `@POST` definitions above; the parameter classes give the schema.
+2. Call the read-only endpoints first (`nfc/v2/klist`,
+   `app/rental/vehicle/list` if it exists) — the responses reveal the
+   structure without changing any state on the car.
+
+Write endpoints (`bind`, `pairing`, `updatePermissionInfo`,
+`changeOwnerDevice`, `delete`) should not be hit blind — a malformed
+payload could lock the VIN out of the cloud or grant access to the
+wrong recipient.
+
 ## No partial / per-window open control
 
 `OPEN_WINDOWS` (functionNo `10020005`) opens **all four windows together** to the same `~10 %` vent crack.  There is no remote command to:
