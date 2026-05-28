@@ -204,6 +204,42 @@
       },
       "vehicle_time_zone": {
         "name": "Vehicle time zone"
+      },
+      "hvac_wind_mode": {
+        "name": "Modo viento HVAC"
+      },
+      "hvac_wind_position": {
+        "name": "Posición viento HVAC"
+      },
+      "hvac_ac_mode": {
+        "name": "Modo A/C"
+      },
+      "front_defrost_status": {
+        "name": "Desempañador delantero"
+      },
+      "electric_defrost_status": {
+        "name": "Desempañador eléctrico"
+      },
+      "wiper_heat_status": {
+        "name": "Calefacción limpia"
+      },
+      "rapid_increase_temp": {
+        "name": "Subida rápida temp"
+      },
+      "rapid_decrease_temp": {
+        "name": "Bajada rápida temp"
+      },
+      "left_front_window_pct": {
+        "name": "Apertura ventana conductor"
+      },
+      "right_front_window_pct": {
+        "name": "Apertura ventana acompañante"
+      },
+      "left_rear_window_pct": {
+        "name": "Apertura ventana trasera izda"
+      },
+      "right_rear_window_pct": {
+        "name": "Apertura ventana trasera dcha"
       }
     },
     "binary_sensor": {

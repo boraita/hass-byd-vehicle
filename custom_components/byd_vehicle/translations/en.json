@@ -328,7 +328,7 @@
       "energy_last_50km_oil_consumption": {
         "name": "Last 50km fuel consumption"
       },
-"energy_last_50km_drive_distribution": {
+      "energy_last_50km_drive_distribution": {
         "name": "Last 50km drive distribution"
       },
       "energy_last_50km_elect_distribution": {
@@ -345,6 +345,42 @@
       },
       "energy_auto_model_graph_today": {
         "name": "Today's model-average consumption"
+      },
+      "hvac_wind_mode": {
+        "name": "HVAC wind mode"
+      },
+      "hvac_wind_position": {
+        "name": "HVAC wind position"
+      },
+      "hvac_ac_mode": {
+        "name": "A/C mode"
+      },
+      "front_defrost_status": {
+        "name": "Front defrost"
+      },
+      "electric_defrost_status": {
+        "name": "Electric defrost"
+      },
+      "wiper_heat_status": {
+        "name": "Wiper heating"
+      },
+      "rapid_increase_temp": {
+        "name": "Rapid temp increase"
+      },
+      "rapid_decrease_temp": {
+        "name": "Rapid temp decrease"
+      },
+      "left_front_window_pct": {
+        "name": "Front left window opening"
+      },
+      "right_front_window_pct": {
+        "name": "Front right window opening"
+      },
+      "left_rear_window_pct": {
+        "name": "Rear left window opening"
+      },
+      "right_rear_window_pct": {
+        "name": "Rear right window opening"
       }
     },
     "binary_sensor": {
