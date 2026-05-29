@@ -8,7 +8,7 @@ from homeassistant.components.device_tracker import SourceType, TrackerEntity
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity import DeviceInfo
-from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 from pybyd.models.gps import GpsInfo
 from pybyd.models.vehicle import Vehicle
@@ -20,7 +20,7 @@ from .coordinator import BydGpsUpdateCoordinator, get_vehicle_display
 async def async_setup_entry(
     hass: HomeAssistant,
     entry: ConfigEntry,
-    async_add_entities: AddEntitiesCallback,
+    async_add_entities: AddConfigEntryEntitiesCallback,
 ) -> None:
     """Set up BYD device tracker entities from a config entry."""
     data = hass.data[DOMAIN][entry.entry_id]
