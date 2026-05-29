@@ -10,7 +10,7 @@
   "issue_tracker": "https://github.com/jkaberg/hass-byd-vehicle/issues",
   "loggers": ["pybyd"],
   "requirements": [
-    "pybyd @ git+https://github.com/boraita/pyBYD@feat/sealion-28-plus-stop-charging"
+    "pybyd@git+https://github.com/boraita/pyBYD@feat/sealion-28-plus-stop-charging"
   ],
   "version": "0.0.80-sealion.64"
 }
