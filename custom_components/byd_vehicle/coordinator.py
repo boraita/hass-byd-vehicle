@@ -502,7 +502,7 @@ class BydDataUpdateCoordinator(DataUpdateCoordinator[VehicleSnapshot]):
     # Override parent annotations: ``data`` is None until first refresh,
     # and we assign ``update_interval = None`` to pause polling (HA
     # accepts None at runtime; the stub doesn't mark it Optional).
-    data: VehicleSnapshot | None  # type: ignore[assignment]
+    data: VehicleSnapshot | None
     update_interval: timedelta | None
 
     def __init__(
@@ -1066,8 +1066,7 @@ class BydDataUpdateCoordinator(DataUpdateCoordinator[VehicleSnapshot]):
             realtime = snapshot.realtime
             charging = snapshot.charging
             is_active_charge = (
-                charging is not None
-                and getattr(charging, "charging_state", None) == 1
+                charging is not None and getattr(charging, "charging_state", None) == 1
             ) or getattr(realtime, "is_charging", None) is True
             is_vehicle_on = getattr(realtime, "is_vehicle_on", None) is True
             if is_active_charge or is_vehicle_on:
@@ -1075,9 +1074,7 @@ class BydDataUpdateCoordinator(DataUpdateCoordinator[VehicleSnapshot]):
                 if is_active_charge and not is_vehicle_on:
                     power_w = getattr(realtime, "gl", None)
                     try:
-                        power_abs = (
-                            abs(float(power_w)) if power_w is not None else None
-                        )
+                        power_abs = abs(float(power_w)) if power_w is not None else None
                     except (TypeError, ValueError):
                         power_abs = None
                     if (
@@ -1473,7 +1470,7 @@ class BydDataUpdateCoordinator(DataUpdateCoordinator[VehicleSnapshot]):
         if start_soc is not None and end_soc is not None:
             soc_added = round(max(0.0, float(end_soc) - float(start_soc)), 1)
             kwh_added = round(soc_added * 82.5 / 100.0, 2)
-        powers = [s.get("kw") for s in self._charge_curve if s.get("kw") is not None]
+        powers = [kw for s in self._charge_curve if (kw := s.get("kw")) is not None]
         avg_kw = round(sum(powers) / len(powers), 2) if powers else None
         self._charge_sessions.append(
             {
@@ -2082,7 +2079,7 @@ class BydGpsUpdateCoordinator(DataUpdateCoordinator[VehicleSnapshot]):
     """
 
     # See note on BydDataUpdateCoordinator above — same parent annotations.
-    data: VehicleSnapshot | None  # type: ignore[assignment]
+    data: VehicleSnapshot | None
     update_interval: timedelta | None
 
     def __init__(

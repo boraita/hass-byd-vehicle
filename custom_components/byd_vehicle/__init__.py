@@ -77,12 +77,6 @@ async def async_migrate_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             MIN_POLL_INTERVAL,
             MAX_POLL_INTERVAL,
         )
-        _sanitize_interval(
-            options.get(CONF_GPS_POLL_INTERVAL, DEFAULT_GPS_POLL_INTERVAL),
-            DEFAULT_GPS_POLL_INTERVAL,
-            MIN_GPS_POLL_INTERVAL,
-            MAX_GPS_POLL_INTERVAL,
-        )
         options[CONF_GPS_POLL_INTERVAL] = DEFAULT_GPS_POLL_INTERVAL
 
         hass.config_entries.async_update_entry(entry, options=options)

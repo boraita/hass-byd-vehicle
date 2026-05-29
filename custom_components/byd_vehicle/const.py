@@ -126,11 +126,6 @@ NODE_METADATA: dict[int, dict[str, str]] = {
     },
 }
 
-# Backward-compatible mapping retained for existing entry defaults and logs.
-BASE_URLS: dict[str, str] = {
-    node["region"]: node["api_base_url"] for node in NODE_METADATA.values()
-}
-
 # country label -> (country code, default language)
 COUNTRY_OPTIONS: dict[str, tuple[str, str]] = {
     "Albania": ("AL", "en"),
