@@ -191,7 +191,10 @@ class BydCarOnSwitch(BydActionEntity, SwitchEntity):
 
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
-        return {**super().extra_state_attributes, "target_temperature_c": 21}
+        return {
+            **super().extra_state_attributes,
+            "target_temperature_c": self._DEFAULT_TEMP_C,
+        }
 
 
 class BydSteeringWheelHeatSwitch(BydActionEntity, SwitchEntity):

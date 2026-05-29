@@ -7,7 +7,7 @@ from typing import Any
 from homeassistant.components.device_tracker import SourceType, TrackerEntity
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
-from homeassistant.helpers.entity import DeviceInfo
+from homeassistant.helpers.device_info import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 from pybyd.models.gps import GpsInfo
@@ -34,11 +34,7 @@ async def async_setup_entry(
         telemetry = coordinators.get(vin)
         if telemetry is None or not telemetry.capability_available("location"):
             continue
-        vehicle = (
-            telemetry.vehicle
-            if telemetry is not None
-            else gps_coordinator._vehicle  # noqa: SLF001
-        )
+        vehicle = telemetry.vehicle
         entities.append(BydDeviceTracker(gps_coordinator, vin, vehicle))
 
     async_add_entities(entities)

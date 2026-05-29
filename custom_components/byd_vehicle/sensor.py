@@ -204,22 +204,6 @@ def _parse_numeric_string(attr: str) -> Callable[[Any], float | None]:
     return _convert
 
 
-def _positive_float_attr(attr: str) -> Callable[[Any], float | None]:
-    """Create a converter returning *None* for negative sentinel values.
-
-    The BYD API uses ``-1`` as a "not available" marker for several
-    numeric fields (e.g. ``oilEndurance``).
-    """
-
-    def _convert(obj: Any) -> float | None:
-        value = getattr(obj, attr, None)
-        if value is None or value < 0:
-            return None
-        return float(value)
-
-    return _convert
-
-
 def _attr_getter(name: str) -> Callable[[Any], Any]:
     """Return a callable that reads attribute *name* from a source object."""
 
@@ -479,6 +463,7 @@ SENSOR_DESCRIPTIONS: tuple[BydSensorDescription, ...] = (
     # telemetry integrations repoint ABRP at this entity.
     BydSensorDescription(
         key="total_mileage_smoothed",
+        name="Total mileage (smoothed)",
         source="realtime",
         native_unit_of_measurement=UnitOfLength.KILOMETERS,
         suggested_display_precision=0,
@@ -1109,6 +1094,7 @@ SENSOR_DESCRIPTIONS: tuple[BydSensorDescription, ...] = (
     ),
     BydSensorDescription(
         key="hvac_temp_out_car",
+        name="HVAC outside temperature",
         source="hvac",
         attr_key="temp_out_car",
         native_unit_of_measurement=UnitOfTemperature.CELSIUS,
@@ -1121,6 +1107,7 @@ SENSOR_DESCRIPTIONS: tuple[BydSensorDescription, ...] = (
     ),
     BydSensorDescription(
         key="hvac_copilot_target_temp",
+        name="HVAC co-pilot target temperature",
         source="hvac",
         attr_key="copilot_setting_temp_new",
         native_unit_of_measurement=UnitOfTemperature.CELSIUS,
@@ -1584,7 +1571,7 @@ SENSOR_DESCRIPTIONS: tuple[BydSensorDescription, ...] = (
         source="realtime",
         value_fn=lambda obj: (
             {1: "external", 2: "internal"}.get(
-                getattr(getattr(obj, "air_run_state", None), "value", None)
+                getattr(getattr(obj, "air_run_state", None), "value", None)  # type: ignore[arg-type]
             )
             if obj is not None
             else None
@@ -1624,7 +1611,7 @@ SENSOR_DESCRIPTIONS: tuple[BydSensorDescription, ...] = (
         source="realtime",
         value_fn=lambda obj: (
             {1: "off", 3: "on"}.get(
-                getattr(getattr(obj, "power_gear", None), "value", None)
+                getattr(getattr(obj, "power_gear", None), "value", None)  # type: ignore[arg-type]
             )
             if obj is not None
             else None
@@ -1807,7 +1794,8 @@ SENSOR_DESCRIPTIONS: tuple[BydSensorDescription, ...] = (
         source="coordinator",
         value_fn=lambda c: (
             datetime.fromtimestamp(
-                getattr(c.car.capabilities, "raw", {}).get("configVersion"), tz=UTC
+                getattr(c.car.capabilities, "raw", {}).get("configVersion"),  # type: ignore[arg-type]
+                tz=UTC,
             )
             if c is not None
             and getattr(c, "car", None) is not None
@@ -1884,7 +1872,9 @@ SENSOR_DESCRIPTIONS: tuple[BydSensorDescription, ...] = (
         name="Sentry status",
         source="realtime",
         value_fn=lambda r: (
-            {0: "off", 1: "standby", 2: "armed"}.get(getattr(r, "sentry_status", None))
+            {0: "off", 1: "standby", 2: "armed"}.get(
+                getattr(r, "sentry_status", None)  # type: ignore[arg-type]
+            )
             if r is not None
             else None
         ),
