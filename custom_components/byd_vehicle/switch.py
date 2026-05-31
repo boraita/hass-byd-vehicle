@@ -199,9 +199,12 @@ class BydSteeringWheelHeatSwitch(BydActionEntity, SwitchEntity):
 
     @property
     def is_on(self) -> bool | None:
-        """Return whether steering wheel heating is on."""
-        if not self._is_vehicle_on():
-            return False
+        """Return whether steering wheel heating is on.
+
+        No ``_is_vehicle_on()`` gate: steering-wheel pre-heat is used
+        precisely while the car is parked/off, so the state must reflect
+        the HVAC/realtime heating flag regardless of power state.
+        """
         hvac = self._get_hvac_status()
         if hvac is not None:
             val = hvac.is_steering_wheel_heating
