@@ -907,54 +907,12 @@ SENSOR_DESCRIPTIONS: tuple[BydSensorDescription, ...] = (
         entity_registry_enabled_default=False,
         entity_category=EntityCategory.DIAGNOSTIC,
     ),
-    BydSensorDescription(
-        key="full_hour",
-        source="realtime",
-        native_unit_of_measurement=UnitOfTime.HOURS,
-        device_class=SensorDeviceClass.DURATION,
-        state_class=SensorStateClass.MEASUREMENT,
-        value_fn=lambda obj: (
-            None if (m := _estimate_minutes_to_full(obj)) is None else m // 60
-        ),
-        icon="mdi:clock-outline",
-        entity_registry_enabled_default=False,
-        entity_category=EntityCategory.DIAGNOSTIC,
-    ),
-    BydSensorDescription(
-        key="full_minute",
-        source="realtime",
-        native_unit_of_measurement=UnitOfTime.MINUTES,
-        device_class=SensorDeviceClass.DURATION,
-        state_class=SensorStateClass.MEASUREMENT,
-        value_fn=lambda obj: _estimate_minutes_to_full(obj),
-        icon="mdi:clock-outline",
-        entity_registry_enabled_default=False,
-        entity_category=EntityCategory.DIAGNOSTIC,
-    ),
-    BydSensorDescription(
-        key="remaining_hours",
-        source="realtime",
-        native_unit_of_measurement=UnitOfTime.HOURS,
-        device_class=SensorDeviceClass.DURATION,
-        state_class=SensorStateClass.MEASUREMENT,
-        value_fn=lambda obj: (
-            None if (m := _estimate_minutes_to_full(obj)) is None else m // 60
-        ),
-        icon="mdi:clock-outline",
-        entity_registry_enabled_default=False,
-        entity_category=EntityCategory.DIAGNOSTIC,
-    ),
-    BydSensorDescription(
-        key="remaining_minutes",
-        source="realtime",
-        native_unit_of_measurement=UnitOfTime.MINUTES,
-        device_class=SensorDeviceClass.DURATION,
-        state_class=SensorStateClass.MEASUREMENT,
-        value_fn=lambda obj: _estimate_minutes_to_full(obj),
-        icon="mdi:clock-outline",
-        entity_registry_enabled_default=False,
-        entity_category=EntityCategory.DIAGNOSTIC,
-    ),
+    # NOTE: the per-component charge-time sensors (full_hour, full_minute,
+    # remaining_hours, remaining_minutes) were retired as redundant — they
+    # all derive from the same _estimate_minutes_to_full().  Keep
+    # ``time_until_full`` (minutes, coordinator) and ``charge_remaining_time``
+    # (HH:MM) as the canonical pair.  Old registry entries are cleaned up via
+    # ``_LEGACY_SENSOR_UNIQUE_ID_REMOVALS`` below.
     # Combined remaining time rendered ``HH:MM``.  Uses the same
     # power-based estimate as the components above so the dashboard
     # stays coherent.  ``"00:00"`` when not actively charging.
@@ -2043,6 +2001,12 @@ _LEGACY_SENSOR_UNIQUE_ID_REMOVALS: frozenset[str] = frozenset(
         # use ``battery_power`` (reads ``gl``) for the real instantaneous
         # power instead.
         "realtime_total_power",
+        # Redundant per-component charge-time sensors retired in favour of
+        # ``time_until_full`` (minutes) + ``charge_remaining_time`` (HH:MM).
+        "realtime_full_hour",
+        "realtime_full_minute",
+        "realtime_remaining_hours",
+        "realtime_remaining_minutes",
     }
 )
 
