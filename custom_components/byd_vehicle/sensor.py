@@ -31,6 +31,8 @@ from homeassistant.const import (
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
+from pybyd.models import BydEnum
+from pybyd.models.hvac import AirConditioningMode, HvacWindMode, HvacWindPosition
 from pybyd.models.realtime import TirePressureUnit
 from pybyd.models.vehicle import EnergyType, Vehicle
 
@@ -270,6 +272,18 @@ def _raw_dump_attrs(obj: Any) -> dict[str, Any]:
     except (TypeError, ValueError):
         return {}
     return {"raw_json": encoded, "key_count": len(raw)}
+
+
+def _hvac_enum_name(enum_cls: type[BydEnum], value: Any) -> str | None:
+    """Coerce a raw HVAC enum field (kept as ``int`` by pydantic's
+    ``Enum | int`` smart-union) into the lowercase enum name.
+
+    Returns ``None`` only when the field is absent.  ``BydEnum._missing_``
+    maps unmapped ints to ``UNKNOWN`` so this never raises.
+    """
+    if value is None:
+        return None
+    return enum_cls(value).name.lower()
 
 
 _WEEKDAY_LABELS: tuple[str, ...] = (
@@ -1017,10 +1031,12 @@ SENSOR_DESCRIPTIONS: tuple[BydSensorDescription, ...] = (
         source="hvac",
         attr_key="wind_mode",
         value_fn=lambda h: (
-            getattr(getattr(h, "wind_mode", None), "name", None)
+            _hvac_enum_name(HvacWindMode, getattr(h, "wind_mode", None))
             if h is not None
             else None
         ),
+        device_class=SensorDeviceClass.ENUM,
+        options=[m.name.lower() for m in HvacWindMode],
         icon="mdi:fan",
         entity_registry_enabled_default=False,
         entity_category=EntityCategory.DIAGNOSTIC,
@@ -1030,10 +1046,12 @@ SENSOR_DESCRIPTIONS: tuple[BydSensorDescription, ...] = (
         source="hvac",
         attr_key="wind_position",
         value_fn=lambda h: (
-            getattr(getattr(h, "wind_position", None), "name", None)
+            _hvac_enum_name(HvacWindPosition, getattr(h, "wind_position", None))
             if h is not None
             else None
         ),
+        device_class=SensorDeviceClass.ENUM,
+        options=[m.name.lower() for m in HvacWindPosition],
         icon="mdi:air-conditioner",
         entity_registry_enabled_default=False,
         entity_category=EntityCategory.DIAGNOSTIC,
@@ -1043,10 +1061,14 @@ SENSOR_DESCRIPTIONS: tuple[BydSensorDescription, ...] = (
         source="hvac",
         attr_key="air_conditioning_mode",
         value_fn=lambda h: (
-            getattr(getattr(h, "air_conditioning_mode", None), "name", None)
+            _hvac_enum_name(
+                AirConditioningMode, getattr(h, "air_conditioning_mode", None)
+            )
             if h is not None
             else None
         ),
+        device_class=SensorDeviceClass.ENUM,
+        options=[m.name.lower() for m in AirConditioningMode],
         icon="mdi:air-conditioner",
         entity_registry_enabled_default=False,
         entity_category=EntityCategory.DIAGNOSTIC,
@@ -1697,23 +1719,6 @@ SENSOR_DESCRIPTIONS: tuple[BydSensorDescription, ...] = (
         entity_registry_enabled_default=False,
         entity_category=EntityCategory.DIAGNOSTIC,
     ),
-    # TEMP diagnostic — dump the raw HVAC (getStatusNow) payload so we can see
-    # the real keys/values for wind_mode / air_conditioning_mode / wind_position.
-    # Remove after capture.
-    BydSensorDescription(
-        key="hvac_raw_debug",
-        name="HVAC raw (diagnostic)",
-        source="hvac",
-        value_fn=lambda h: (
-            len(h.raw)
-            if h is not None and isinstance(getattr(h, "raw", None), dict)
-            else None
-        ),
-        state_attrs_fn=_raw_dump_attrs,
-        icon="mdi:database-search",
-        entity_registry_enabled_default=True,
-        entity_category=EntityCategory.DIAGNOSTIC,
-    ),
     BydSensorDescription(
         key="charge_curve",
         name="Charge curve",
@@ -2026,6 +2031,8 @@ _LEGACY_SENSOR_UNIQUE_ID_REMOVALS: frozenset[str] = frozenset(
         "realtime_full_minute",
         "realtime_remaining_hours",
         "realtime_remaining_minutes",
+        # Temporary HVAC raw-dump diagnostic (sealion.71) — removed after capture.
+        "hvac_hvac_raw_debug",
     }
 )
 
