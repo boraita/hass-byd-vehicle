@@ -1697,6 +1697,23 @@ SENSOR_DESCRIPTIONS: tuple[BydSensorDescription, ...] = (
         entity_registry_enabled_default=False,
         entity_category=EntityCategory.DIAGNOSTIC,
     ),
+    # TEMP diagnostic — dump the raw HVAC (getStatusNow) payload so we can see
+    # the real keys/values for wind_mode / air_conditioning_mode / wind_position.
+    # Remove after capture.
+    BydSensorDescription(
+        key="hvac_raw_debug",
+        name="HVAC raw (diagnostic)",
+        source="hvac",
+        value_fn=lambda h: (
+            len(h.raw)
+            if h is not None and isinstance(getattr(h, "raw", None), dict)
+            else None
+        ),
+        state_attrs_fn=_raw_dump_attrs,
+        icon="mdi:database-search",
+        entity_registry_enabled_default=True,
+        entity_category=EntityCategory.DIAGNOSTIC,
+    ),
     BydSensorDescription(
         key="charge_curve",
         name="Charge curve",
