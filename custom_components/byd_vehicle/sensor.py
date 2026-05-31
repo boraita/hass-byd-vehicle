@@ -1961,6 +1961,7 @@ SENSOR_DESCRIPTIONS: tuple[BydSensorDescription, ...] = (
         source="gps",
         attr_key="direction",
         native_unit_of_measurement="°",
+        suggested_display_precision=0,
         state_class=SensorStateClass.MEASUREMENT,
         icon="mdi:compass",
         entity_registry_enabled_default=False,
