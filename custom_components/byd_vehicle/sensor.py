@@ -957,7 +957,8 @@ SENSOR_DESCRIPTIONS: tuple[BydSensorDescription, ...] = (
         device_class=SensorDeviceClass.DISTANCE,
         state_class=SensorStateClass.MEASUREMENT,
         icon="mdi:gas-station",
-        entity_registry_enabled_default=True,
+        # Fuel/oil sensors are meaningless on a BEV — off by default.
+        entity_registry_enabled_default=False,
         value_fn=_round_int_attr("oil_endurance"),
     ),
     BydSensorDescription(
@@ -966,7 +967,8 @@ SENSOR_DESCRIPTIONS: tuple[BydSensorDescription, ...] = (
         native_unit_of_measurement=PERCENTAGE,
         state_class=SensorStateClass.MEASUREMENT,
         icon="mdi:gas-station",
-        entity_registry_enabled_default=True,
+        # Fuel/oil sensors are meaningless on a BEV — off by default.
+        entity_registry_enabled_default=False,
     ),
     BydSensorDescription(
         key="total_oil",
