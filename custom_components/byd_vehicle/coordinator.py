@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import inspect
 import json
 import logging
 from datetime import UTC, datetime, timedelta
@@ -212,6 +213,20 @@ class BydApi:
                 self._async_write_debug_dump(f"mqtt_{event}", dump)
             )
 
+    def _handle_mqtt_connect(self) -> None:
+        """Handle an MQTT (re)connect from pyBYD — the 'cloud back up' signal.
+
+        Fired when the push channel connects/reconnects to the BYD cloud
+        (e.g. after a maintenance outage).  Surfaced as an event-bus event
+        so automations can react to the service returning.
+        """
+        self._hass.bus.async_fire(
+            _HA_EVENT_CLOUD_ONLINE, {"entry_id": self._entry.entry_id}
+        )
+        _LOGGER.debug(
+            "MQTT (re)connected — cloud online: entry=%s", self._entry.entry_id
+        )
+
     @property
     def mqtt_event_counters(self) -> dict[str, int]:
         """Per-event MQTT push counts since HA start."""
@@ -347,13 +362,17 @@ class BydApi:
                 "Creating new pyBYD client: entry_id=%s",
                 self._entry.entry_id,
             )
-            self._client = BydClient(
-                self._config,
-                session=self._http_session,
-                on_mqtt_event=self._handle_mqtt_event,
-                on_command_ack=self._handle_command_ack,
-                on_command_lifecycle=self._handle_command_lifecycle,
-            )
+            client_kwargs: dict[str, Any] = {
+                "session": self._http_session,
+                "on_mqtt_event": self._handle_mqtt_event,
+                "on_command_ack": self._handle_command_ack,
+                "on_command_lifecycle": self._handle_command_lifecycle,
+            }
+            # Wire the MQTT (re)connect callback only when the installed
+            # pybyd supports it, so an older pinned pybyd does not break setup.
+            if "on_mqtt_connect" in inspect.signature(BydClient).parameters:
+                client_kwargs["on_mqtt_connect"] = self._handle_mqtt_connect
+            self._client = BydClient(self._config, **client_kwargs)
             await self._client.async_start()
 
             # Re-verify command access after client recreation.
