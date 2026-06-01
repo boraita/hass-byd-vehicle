@@ -64,31 +64,70 @@ def _normalize_epoch(value: Any) -> datetime | None:
     return None
 
 
-def _normalize_gps_timestamp(
-    gps_timestamp: datetime | None,
-    realtime_timestamp: datetime | None,
+def _snap_whole_hour_offset(
+    value: datetime,
+    reference: datetime | None,
 ) -> datetime | None:
-    """Correct clean whole-hour GPS offsets relative to realtime.
+    """Remove a clean whole-hour offset of *value* relative to *reference*.
 
-    Some vehicles appear to report GPS timestamps with a timezone-style
-    encoding bug that shifts the value by an exact number of whole hours.
-    When the delta vs. realtime is within 5 minutes of a whole-hour
-    offset, subtract that offset; otherwise preserve the original GPS
-    timestamp to avoid over-correcting stale data.
+    Returns the corrected value when the gap between *value* and
+    *reference* is within 5 minutes of a non-zero whole number of hours;
+    otherwise returns ``None`` to signal "no correction applied" (either
+    because there is no reference, the gap is already sub-hour, or it is
+    not close enough to a whole hour to be a timezone-style shift).
     """
-    if gps_timestamp is None or realtime_timestamp is None:
-        return gps_timestamp
+    if reference is None:
+        return None
 
-    delta = gps_timestamp - realtime_timestamp
+    delta = value - reference
     whole_hours = round(delta.total_seconds() / 3600)
     if whole_hours == 0:
-        return gps_timestamp
+        return None
 
     whole_hour_delta = timedelta(hours=whole_hours)
     if abs(delta - whole_hour_delta) > timedelta(minutes=5):
+        return None
+
+    return value - whole_hour_delta
+
+
+def _normalize_gps_timestamp(
+    gps_timestamp: datetime | None,
+    realtime_timestamp: datetime | None,
+    now: datetime | None = None,
+) -> datetime | None:
+    """Correct clean whole-hour GPS offsets.
+
+    Some vehicles report GPS timestamps with a timezone-style encoding
+    bug that shifts the value by an exact number of whole hours.  Two
+    references are tried, in order:
+
+    1. The realtime payload timestamp — catches a shift that affects
+       only the GPS section (the case the original fix handled).
+    2. The wall clock (*now*) — catches a *feed-wide* shift where the
+       realtime timestamp carries the **same** offset, so the
+       GPS-vs-realtime delta is ~0 and step 1 finds nothing.  This step
+       only fires when the GPS timestamp lies in the *future*: a
+       satellite fix can never be dated after the moment we received it,
+       so a whole-hour future offset is unambiguously the encoding bug,
+       whereas a past timestamp may simply be a stale/preserved fix and
+       is left untouched to avoid over-correcting.
+    """
+    if gps_timestamp is None:
         return gps_timestamp
 
-    return gps_timestamp - whole_hour_delta
+    corrected = _snap_whole_hour_offset(gps_timestamp, realtime_timestamp)
+    if corrected is not None:
+        return corrected
+
+    if now is None:
+        now = datetime.now(tz=UTC)
+    if gps_timestamp > now:
+        corrected = _snap_whole_hour_offset(gps_timestamp, now)
+        if corrected is not None:
+            return corrected
+
+    return gps_timestamp
 
 
 @dataclass(frozen=True, kw_only=True)
