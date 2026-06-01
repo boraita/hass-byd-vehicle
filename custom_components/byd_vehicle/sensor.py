@@ -1293,7 +1293,7 @@ SENSOR_DESCRIPTIONS: tuple[BydSensorDescription, ...] = (
         ),
         state_class=SensorStateClass.MEASUREMENT,
         icon="mdi:lightning-bolt",
-        entity_registry_enabled_default=False,
+        entity_registry_enabled_default=True,
         entity_category=EntityCategory.DIAGNOSTIC,
     ),
     BydSensorDescription(
@@ -1329,7 +1329,7 @@ SENSOR_DESCRIPTIONS: tuple[BydSensorDescription, ...] = (
         ),
         state_class=SensorStateClass.MEASUREMENT,
         icon="mdi:lightning-bolt",
-        entity_registry_enabled_default=False,
+        entity_registry_enabled_default=True,
         entity_category=EntityCategory.DIAGNOSTIC,
     ),
     BydSensorDescription(
@@ -1371,7 +1371,7 @@ SENSOR_DESCRIPTIONS: tuple[BydSensorDescription, ...] = (
         unit_fn=_attr_getter("ev_value_unit"),
         state_class=SensorStateClass.MEASUREMENT,
         icon="mdi:lightning-bolt",
-        entity_registry_enabled_default=False,
+        entity_registry_enabled_default=True,
         entity_category=EntityCategory.DIAGNOSTIC,
     ),
     BydSensorDescription(
@@ -1457,7 +1457,7 @@ SENSOR_DESCRIPTIONS: tuple[BydSensorDescription, ...] = (
         ),
         state_class=SensorStateClass.MEASUREMENT,
         icon="mdi:chart-line",
-        entity_registry_enabled_default=False,
+        entity_registry_enabled_default=True,
         entity_category=EntityCategory.DIAGNOSTIC,
     ),
     BydSensorDescription(
@@ -1478,7 +1478,7 @@ SENSOR_DESCRIPTIONS: tuple[BydSensorDescription, ...] = (
         ),
         state_class=SensorStateClass.MEASUREMENT,
         icon="mdi:chart-line",
-        entity_registry_enabled_default=False,
+        entity_registry_enabled_default=True,
         entity_category=EntityCategory.DIAGNOSTIC,
     ),
     # --- Smart-charging schedule (sourced from /control/smartCharge/homePage) ---
@@ -1600,7 +1600,7 @@ SENSOR_DESCRIPTIONS: tuple[BydSensorDescription, ...] = (
         device_class=SensorDeviceClass.ENUM,
         options=["external", "internal"],
         icon="mdi:air-filter",
-        entity_registry_enabled_default=False,
+        entity_registry_enabled_default=True,
     ),
     # Battery preheating state during DC charging.  Distinct from
     # `battery_heating` binary which only reports on/off — this exposes

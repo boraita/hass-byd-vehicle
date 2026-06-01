@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from datetime import timedelta
 from typing import Any
 
 from homeassistant.components import persistent_notification
@@ -11,6 +12,7 @@ from homeassistant.core import HomeAssistant, ServiceCall
 from homeassistant.exceptions import ConfigEntryNotReady, HomeAssistantError
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
+from homeassistant.helpers.event import async_track_time_interval
 from pybyd import BydClient
 
 from .const import (
@@ -37,6 +39,12 @@ from .coordinator import BydApi, BydDataUpdateCoordinator, BydGpsUpdateCoordinat
 from .device_fingerprint import async_generate_device_profile
 
 _LOGGER = logging.getLogger(__name__)
+
+# How often to refresh EnergyConsumption data in the background. The
+# getEnergyConsumption endpoint is a single "cold" cloud read — it does NOT
+# wake the car (unlike realtime polling), so a periodic refresh costs no
+# 12V/HV battery. Energy stats change slowly, so a few hours is plenty.
+ENERGY_REFRESH_INTERVAL = timedelta(hours=3)
 
 
 def _sanitize_interval(value: int, default: int, min_value: int, max_value: int) -> int:
@@ -286,6 +294,27 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 vin,
                 exc,
             )
+
+    # Periodic background refresh of EnergyConsumption data. getEnergyConsumption
+    # is a single cold cloud read that does NOT wake the car, so this is safe to
+    # run on a timer regardless of sleep/polling state. The handle is registered
+    # via async_on_unload so it is cancelled cleanly when the entry unloads.
+    async def _async_refresh_energy(_now: Any) -> None:
+        for refresh_vin, refresh_coordinator in coordinators.items():
+            try:
+                await refresh_coordinator.async_fetch_energy()
+            except Exception as exc:  # noqa: BLE001
+                _LOGGER.debug(
+                    "Periodic energy refresh failed: vin=%s error=%s",
+                    refresh_vin,
+                    exc,
+                )
+
+    entry.async_on_unload(
+        async_track_time_interval(
+            hass, _async_refresh_energy, ENERGY_REFRESH_INTERVAL
+        )
+    )
 
     # One-shot charging fetch so the homePage-backed sensors are
     # populated at startup. Pulls live state AND schedule from one

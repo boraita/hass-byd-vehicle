@@ -564,7 +564,7 @@ BINARY_SENSOR_DESCRIPTIONS: tuple[BydBinarySensorDescription, ...] = (
         key="less_one_min",
         source="realtime",
         icon="mdi:timer-alert",
-        entity_registry_enabled_default=False,
+        entity_registry_enabled_default=True,
         entity_category=EntityCategory.DIAGNOSTIC,
         value_fn=_attr_truthy("less_one_min"),
     ),
