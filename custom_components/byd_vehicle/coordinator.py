@@ -51,6 +51,15 @@ from .const import (
 _LOGGER = logging.getLogger(__name__)
 
 _HA_EVENT_COMMAND_LIFECYCLE: str = f"{DOMAIN}_command_lifecycle"
+# Fired on every MQTT push (event-bus hook so automations can react without
+# polling).  Payload: {vin, event, summary}.
+_HA_EVENT_PUSH: str = f"{DOMAIN}_push"
+# Fired when the vehicle's on/off (power) state transitions.
+# Payload: {vin, is_on}.
+_HA_EVENT_POWER_CHANGED: str = f"{DOMAIN}_power_changed"
+# Fired when the MQTT push channel (re)connects to the BYD cloud.
+# Payload: {vin}.  The "service is back up" signal.
+_HA_EVENT_CLOUD_ONLINE: str = f"{DOMAIN}_cloud_online"
 
 _AUTH_ERRORS = (BydAuthenticationError, BydSessionExpiredError)
 _RECOVERABLE_ERRORS = (
@@ -183,6 +192,16 @@ class BydApi:
         )
         if len(self._mqtt_event_samples) > 50:
             self._mqtt_event_samples = self._mqtt_event_samples[-50:]
+        # Event-bus hook: let automations react to any push instantly,
+        # without polling the car.
+        self._hass.bus.async_fire(
+            _HA_EVENT_PUSH,
+            {
+                "vin": vin,
+                "event": event,
+                "summary": _extract_mqtt_sample_fields(event, respond_data),
+            },
+        )
         if self._debug_dumps_enabled:
             dump: dict[str, Any] = {
                 "vin": vin,
@@ -581,6 +600,7 @@ class BydDataUpdateCoordinator(DataUpdateCoordinator[VehicleSnapshot]):
         self._schedule_hvac_final_reconcile_if_needed(previous_snapshot, snapshot)
         self._track_charge_session(previous_snapshot, snapshot)
         self._maybe_fire_phase_changed(previous_snapshot, snapshot)
+        self._maybe_fire_power_changed(previous_snapshot, snapshot)
         self._maybe_handle_state_transitions(previous_snapshot, snapshot)
 
         previous_timestamp = None
@@ -1344,6 +1364,28 @@ class BydDataUpdateCoordinator(DataUpdateCoordinator[VehicleSnapshot]):
             prev_phase or "?",
             new_phase,
         )
+
+    def _maybe_fire_power_changed(
+        self,
+        previous: VehicleSnapshot | None,
+        current: VehicleSnapshot,
+    ) -> None:
+        """Fire :event:`byd_vehicle_power_changed` on a vehicle on/off edge.
+
+        Driven by the MQTT push path, so automations can react to the car
+        turning on/off without polling.  Only fires on an actual transition.
+        """
+        was_on = self._is_vehicle_on_from_snapshot(previous)
+        is_on = self._is_vehicle_on_from_snapshot(current)
+        # Skip when we can't tell, or on the first snapshot (no prior state)
+        # to avoid a spurious edge on startup.
+        if is_on is None or was_on is None or was_on == is_on:
+            return
+        self.hass.bus.async_fire(
+            _HA_EVENT_POWER_CHANGED,
+            {"vin": self._vin, "is_on": is_on},
+        )
+        _LOGGER.debug("Power change: vin=%s on=%s", self._vin[-6:], is_on)
 
     # AC slow charge surfaces micro-pauses in ``charging_state`` every
     # ~30 seconds (the car deep-sleeps mid-charge and the cloud loses
