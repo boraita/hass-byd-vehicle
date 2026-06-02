@@ -14,5 +14,5 @@
   "requirements": [
     "pybyd@git+https://github.com/boraita/pyBYD@b88acf4ff9f17e0ad78f5654c9576031d343a1af"
   ],
-  "version": "0.0.81-sealion.78"
+  "version": "0.0.81-sealion.79"
 }
