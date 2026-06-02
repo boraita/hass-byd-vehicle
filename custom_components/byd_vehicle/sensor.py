@@ -1491,7 +1491,7 @@ SENSOR_DESCRIPTIONS: tuple[BydSensorDescription, ...] = (
             else None
         ),
         icon="mdi:calendar-clock",
-        entity_registry_enabled_default=False,
+        entity_registry_enabled_default=True,
         entity_category=EntityCategory.DIAGNOSTIC,
     ),
     BydSensorDescription(
@@ -1509,7 +1509,7 @@ SENSOR_DESCRIPTIONS: tuple[BydSensorDescription, ...] = (
             else None
         ),
         icon="mdi:calendar-clock",
-        entity_registry_enabled_default=False,
+        entity_registry_enabled_default=True,
         entity_category=EntityCategory.DIAGNOSTIC,
     ),
     BydSensorDescription(
@@ -1519,7 +1519,7 @@ SENSOR_DESCRIPTIONS: tuple[BydSensorDescription, ...] = (
             _format_charge_way(obj.charge_way) if obj is not None else None
         ),
         icon="mdi:calendar-refresh",
-        entity_registry_enabled_default=False,
+        entity_registry_enabled_default=True,
         entity_category=EntityCategory.DIAGNOSTIC,
     ),
     BydSensorDescription(
@@ -1533,7 +1533,7 @@ SENSOR_DESCRIPTIONS: tuple[BydSensorDescription, ...] = (
             else None
         ),
         icon="mdi:car-clock",
-        entity_registry_enabled_default=False,
+        entity_registry_enabled_default=True,
         entity_category=EntityCategory.DIAGNOSTIC,
     ),
     BydSensorDescription(
@@ -1547,7 +1547,7 @@ SENSOR_DESCRIPTIONS: tuple[BydSensorDescription, ...] = (
             else None
         ),
         icon="mdi:cash-clock",
-        entity_registry_enabled_default=False,
+        entity_registry_enabled_default=True,
         entity_category=EntityCategory.DIAGNOSTIC,
     ),
     BydSensorDescription(
@@ -1561,7 +1561,7 @@ SENSOR_DESCRIPTIONS: tuple[BydSensorDescription, ...] = (
             else None
         ),
         icon="mdi:cash-clock",
-        entity_registry_enabled_default=False,
+        entity_registry_enabled_default=True,
         entity_category=EntityCategory.DIAGNOSTIC,
     ),
     # =============================================
