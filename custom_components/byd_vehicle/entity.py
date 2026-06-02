@@ -179,15 +179,15 @@ class BydVehicleEntity(CoordinatorEntity[BydDataUpdateCoordinator]):
     ) -> None:
         """Execute a BydCar capability command with HA error handling.
 
-        On :class:`BydRemoteControlError` the command is treated as
-        optimistically successful (pyBYD's state engine handles the
-        projection).  On any other failure the exception is re-raised
-        as :class:`HomeAssistantError`.
+        On :class:`BydRemoteControlError` (rejection / timeout / asleep car)
+        the failure is surfaced as :class:`HomeAssistantError` — pyBYD has
+        already rolled back the optimistic projection, so no fake state is
+        shown. Other failures are likewise re-raised as
+        :class:`HomeAssistantError`.
 
-        After a non-fatal completion (success OR optimistic-fail path)
-        schedules a force-poll :attr:`_POST_ACTION_REFRESH_DELAY` seconds
-        later so the UI catches up to the real vehicle state without the
-        user needing to press Force poll manually.
+        After a genuine success schedules a force-poll
+        :attr:`_POST_ACTION_REFRESH_DELAY` seconds later so the UI catches up
+        to the real vehicle state without the user pressing Force poll.
         """
         if not self.coordinator.has_operation_pin:
             raise HomeAssistantError(self._command_pin_error_message())
@@ -196,13 +196,21 @@ class BydVehicleEntity(CoordinatorEntity[BydDataUpdateCoordinator]):
             await coro
             schedule_refresh = True
         except BydRemoteControlError as exc:
+            code = getattr(exc, "code", None)
+            if code in ("timeout", "no_serial"):
+                msg = (
+                    f"{command}: the car didn't confirm the command "
+                    "(it may be asleep or offline) — try again"
+                )
+            else:
+                msg = f"{command}: the car rejected the command ({exc})"
             _LOGGER.warning(
-                "%s command sent but cloud reported failure — "
-                "pyBYD state engine handles projection: %s",
-                command,
-                exc,
+                "%s command not confirmed: %s (code=%s)", command, exc, code
             )
-            schedule_refresh = True
+            # pyBYD already rolled back the optimistic projection, so the
+            # reported state stays honest; surface the failure to the user
+            # instead of pretending it worked.
+            raise HomeAssistantError(msg) from exc
         except BydControlPasswordError as exc:
             if exc.code == "5006":
                 msg = "Cloud control temporarily locked by BYD — try again later"
