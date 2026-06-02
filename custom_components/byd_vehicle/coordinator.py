@@ -28,6 +28,7 @@ from pybyd import (
     BydEndpointNotSupportedError,
     BydRateLimitError,
     BydRemoteControlError,
+    BydServiceBusyError,
     BydSessionExpiredError,
     BydTransportError,
     CommandAckEvent,
@@ -588,6 +589,9 @@ class BydDataUpdateCoordinator(DataUpdateCoordinator[VehicleSnapshot]):
         self._last_energy_fetch_at: datetime | None = None
         self._last_energy_fetch_status: str | None = None
         self._consecutive_fetch_failures: int = 0
+        # Streak of consecutive service-busy (1008) realtime failures; drives
+        # the adaptive backoff so we stop hammering an overloaded backend.
+        self._service_busy_streak: int = 0
         # Hardening: track whether we've ever received a non-sentinel realtime
         # payload.  Used to (a) skip adaptive backoff during the first 5 min
         # after startup so we hammer the cloud until the car responds, and
@@ -934,11 +938,19 @@ class BydDataUpdateCoordinator(DataUpdateCoordinator[VehicleSnapshot]):
                 self._realtime_endpoint_unsupported = True
         except _RECOVERABLE_ERRORS as exc:
             self._consecutive_fetch_failures += 1
+            # Track 1008 bursts specifically so the adaptive interval can back
+            # off; a non-busy recoverable error resets the busy streak.
+            if isinstance(exc, BydServiceBusyError):
+                self._service_busy_streak += 1
+            else:
+                self._service_busy_streak = 0
             _LOGGER.warning(
-                "Realtime fetch failed: vin=%s, error=%s, consecutive_failures=%d",
+                "Realtime fetch failed: vin=%s, error=%s, consecutive_failures=%d, "
+                "service_busy_streak=%d",
                 self._vin,
                 exc,
                 self._consecutive_fetch_failures,
+                self._service_busy_streak,
             )
 
         # --- HVAC (conditional) ---
@@ -1008,6 +1020,7 @@ class BydDataUpdateCoordinator(DataUpdateCoordinator[VehicleSnapshot]):
         if realtime_fetch_succeeded:
             self._last_successful_fetch_at = datetime.now(tz=UTC)
             self._consecutive_fetch_failures = 0
+            self._service_busy_streak = 0
 
         # Mark the first non-sentinel payload — used by the adaptive
         # interval to know when to stop aggressive startup polling.
@@ -1066,6 +1079,14 @@ class BydDataUpdateCoordinator(DataUpdateCoordinator[VehicleSnapshot]):
     # cadence wastes calls.  Threshold sits between Schuko (~2.3 kW)
     # and the smallest DC fast chargers (~25 kW).
     _AC_SLOW_CHARGE_THRESHOLD_W = 5000.0
+
+    # Service-busy (1008) backoff: when the backend returns bursts of
+    # BydServiceBusyError, widen the poll interval instead of hammering.
+    # Backoff kicks in at the threshold and doubles per extra failure,
+    # capped, with a hard ceiling on the resulting interval.
+    _SERVICE_BUSY_BACKOFF_THRESHOLD = 3
+    _SERVICE_BUSY_BACKOFF_MAX_FACTOR = 8
+    _MAX_BACKOFF_INTERVAL = timedelta(minutes=30)
 
     def _is_sentinel_payload(self, snapshot: VehicleSnapshot | None) -> bool:
         """Whether the realtime payload looks like a "sleeping car" sentinel.
@@ -1152,7 +1173,20 @@ class BydDataUpdateCoordinator(DataUpdateCoordinator[VehicleSnapshot]):
         ):
             multiplier *= self._MQTT_AWARE_BONUS
 
-        return base * multiplier
+        # Service-busy (1008) backoff: bursts of "Error de servicio" mean the
+        # backend wants fewer requests — widen the interval (doubling per extra
+        # failure past the threshold, capped) instead of hammering. Skipped
+        # during the startup window above (returned early), so a deep-asleep
+        # car is still chased before we ever back off.
+        if self._service_busy_streak >= self._SERVICE_BUSY_BACKOFF_THRESHOLD:
+            busy_factor = min(
+                2 ** (self._service_busy_streak - self._SERVICE_BUSY_BACKOFF_THRESHOLD + 1),
+                self._SERVICE_BUSY_BACKOFF_MAX_FACTOR,
+            )
+            multiplier *= busy_factor
+
+        interval = base * multiplier
+        return min(interval, self._MAX_BACKOFF_INTERVAL)
 
     def _apply_adaptive_interval(self, snapshot: VehicleSnapshot) -> None:
         """Update ``update_interval`` from the adaptive policy."""
