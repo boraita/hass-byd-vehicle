@@ -12,7 +12,7 @@
     "pybyd"
   ],
   "requirements": [
-    "pybyd@git+https://github.com/boraita/pyBYD@feat/sealion-28-plus-stop-charging"
+    "pybyd@git+https://github.com/boraita/pyBYD@84c8a55fb8955aa0d982a9ebeb7159c3b7f347f2"
   ],
-  "version": "0.0.81-sealion.76"
+  "version": "0.0.81-sealion.77"
 }
