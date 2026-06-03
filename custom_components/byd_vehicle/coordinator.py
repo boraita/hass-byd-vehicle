@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import inspect
 import json
 import logging
@@ -787,15 +788,95 @@ class BydDataUpdateCoordinator(DataUpdateCoordinator[VehicleSnapshot]):
         (plug-in, key fob press, etc.) when waiting for the next scheduled
         poll would be too slow.  Caller should await this and then read
         the freshly-updated entity states.
+
+        Wake-aware: if the first realtime fetch comes back offline/stale
+        (a sleeping T-Box makes the cloud return its last cached snapshot),
+        send a benign flash-lights wake and retry the fetch once the car
+        reports online — so a single press genuinely refreshes a sleeping
+        car instead of silently returning hours-old data.  When the car has
+        no cell coverage the wake is rejected (code 6002) and we keep the
+        last-known snapshot; that is a connectivity limit, not something
+        polling can fix.
         """
         try:
             await self.async_fetch_realtime()
         except Exception as exc:  # noqa: BLE001
             _LOGGER.warning("force_poll: realtime failed vin=%s err=%s", self._vin, exc)
+
+        if self._should_wake_for_force_poll():
+            await self._wake_and_refetch()
+
         try:
             await self.async_fetch_charging()
         except Exception as exc:  # noqa: BLE001
             _LOGGER.warning("force_poll: charging failed vin=%s err=%s", self._vin, exc)
+
+    def _should_wake_for_force_poll(self) -> bool:
+        """Whether a force-poll should attempt a flash-lights wake.
+
+        True only when the car supports flash-lights *and* the current
+        snapshot looks like the "sleeping car" sentinel (offline / stale),
+        so an already-awake car never triggers a needless light flash.
+        """
+        car = self._car
+        if car is None:
+            return False
+        finder = getattr(car, "finder", None)
+        if finder is None or not getattr(finder, "flash_available", False):
+            return False
+        return self._is_sentinel_payload(getattr(car, "state", None))
+
+    async def _wake_and_refetch(self) -> None:
+        """Send a benign wake (flash lights) then re-fetch until online.
+
+        Polls realtime for up to ~60 s after the wake.  Swallows a rejected
+        wake (code 6002 = weak signal around the vehicle): an unreachable
+        T-Box cannot be woken remotely, so we keep the last-known snapshot
+        rather than spin.
+        """
+        car = self._car
+        if car is None:
+            return
+        wake_timeout = 60.0
+        wake_interval = 8.0
+        _LOGGER.info(
+            "force_poll: car looks offline; sending flash-lights wake vin=%s",
+            self._vin[-6:],
+        )
+        try:
+            await car.finder.flash_lights()
+        except Exception as exc:  # noqa: BLE001
+            _LOGGER.info(
+                "force_poll: wake not delivered (car unreachable?) vin=%s err=%s",
+                self._vin[-6:],
+                exc,
+            )
+            return
+        elapsed = 0.0
+        while elapsed < wake_timeout:
+            await asyncio.sleep(wake_interval)
+            elapsed += wake_interval
+            try:
+                await self.async_fetch_realtime()
+            except Exception as exc:  # noqa: BLE001
+                _LOGGER.debug(
+                    "force_poll: post-wake fetch failed vin=%s err=%s",
+                    self._vin[-6:],
+                    exc,
+                )
+                continue
+            if not self._is_sentinel_payload(getattr(car, "state", None)):
+                _LOGGER.info(
+                    "force_poll: car woke; fresh data after %.0fs vin=%s",
+                    elapsed,
+                    self._vin[-6:],
+                )
+                return
+        _LOGGER.info(
+            "force_poll: car did not wake within %.0fs vin=%s",
+            wake_timeout,
+            self._vin[-6:],
+        )
 
     async def async_refresh_firmware_metadata(self) -> str | None:
         """Refresh ``vehicle.tbox_version`` from the cloud vehicle list.
