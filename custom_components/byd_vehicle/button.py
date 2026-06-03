@@ -164,9 +164,9 @@ class BydStartChargingButton(BydVehicleEntity, ButtonEntity):
     def available(self) -> bool:
         # BYD's cloud rejects /control/smartCharge/changeChargeStatue with
         # res=3 "Operation failure" when the vehicle is already in the
-        # target state — either already charging, or at 100 % SoC with
-        # nothing to charge (see references/changeResult.md). Hide the
-        # button in those cases so users don't get a confusing error.
+        # target state — either already charging, at 100 % SoC, or when
+        # the cable isn't physically plugged in.  Hide the button in
+        # those cases so users don't get a confusing error.
         #
         # Prefer realtime fields (always present, drive the user-visible
         # battery_level / charging sensors) over the charging snapshot
@@ -191,6 +191,14 @@ class BydStartChargingButton(BydVehicleEntity, ButtonEntity):
             soc = snapshot.charging.soc
         if soc is not None and soc >= 100:
             return False
+        # Cable must be plugged in.  Source from the charging endpoint
+        # which PR #144 made the authoritative plug state — realtime's
+        # connectState frequently sits at -1 (sentinel) on Sealion 7 EU
+        # so we only treat charging.connect_state as a hard "no".
+        if snapshot.charging is not None:
+            connect_state = getattr(snapshot.charging, "connect_state", None)
+            if connect_state is not None and not connect_state:
+                return False
         return True
 
     async def async_press(self) -> None:
