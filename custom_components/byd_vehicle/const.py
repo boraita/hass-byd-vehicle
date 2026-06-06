@@ -37,9 +37,13 @@ DEFAULT_COUNTRY = "United Kingdom"
 DEFAULT_LANGUAGE = "en"
 
 MIN_POLL_INTERVAL = 30
-MAX_POLL_INTERVAL = 900
+# 8 hours. Polling wakes the car, so frequent polling drains the traction
+# battery (~0.1 kWh/h at 300 s on a 60 kWh pack); a high ceiling lets users
+# poll sparsely (e.g. once an hour) without relying on external automations.
+# See issue #120.
+MAX_POLL_INTERVAL = 28800
 MIN_GPS_POLL_INTERVAL = 30
-MAX_GPS_POLL_INTERVAL = 900
+MAX_GPS_POLL_INTERVAL = 28800
 
 # Node-to-server mapping based on BYD app reverse engineering.
 # Push server URLs are stored as reference metadata for future usage.
