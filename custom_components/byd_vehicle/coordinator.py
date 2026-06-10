@@ -1160,18 +1160,24 @@ class BydDataUpdateCoordinator(DataUpdateCoordinator[VehicleSnapshot]):
         try:
             await self.async_fetch_charging()
         except Exception as exc:  # noqa: BLE001
-            _LOGGER.warning("post-OTA charging refresh failed vin=%s err=%s", self._vin, exc)
+            _LOGGER.warning(
+                "post-OTA charging refresh failed vin=%s err=%s", self._vin, exc
+            )
         try:
             await self.async_refresh_firmware_metadata()
         except Exception as exc:  # noqa: BLE001
-            _LOGGER.warning("post-OTA firmware refresh failed vin=%s err=%s", self._vin, exc)
+            _LOGGER.warning(
+                "post-OTA firmware refresh failed vin=%s err=%s", self._vin, exc
+            )
 
     async def _async_post_plug_refresh(self) -> None:
         """Background: refresh charging snapshot after plug detected."""
         try:
             await self.async_fetch_charging()
         except Exception as exc:  # noqa: BLE001
-            _LOGGER.warning("post-plug charging refresh failed vin=%s err=%s", self._vin, exc)
+            _LOGGER.warning(
+                "post-plug charging refresh failed vin=%s err=%s", self._vin, exc
+            )
 
     def _maybe_fire_phase_changed(
         self,
