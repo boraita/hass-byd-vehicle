@@ -52,6 +52,10 @@ _LOGGER = logging.getLogger(__name__)
 
 _HA_EVENT_COMMAND_LIFECYCLE: str = f"{DOMAIN}_command_lifecycle"
 
+# Battery capacity defaults to Sealion 7 Comfort nameplate (82.5 kWh).
+# Wrong for other trims/models; swap when pyBYD exposes per-model capacity.
+_DEFAULT_BATTERY_KWH: float = 82.5
+
 _AUTH_ERRORS = (BydAuthenticationError, BydSessionExpiredError)
 _RECOVERABLE_ERRORS = (
     BydApiError,
@@ -1282,8 +1286,7 @@ class BydDataUpdateCoordinator(DataUpdateCoordinator[VehicleSnapshot]):
         soc_added = self.charge_session_soc_added
         if soc_added is None:
             return None
-        battery_kwh = 82.5
-        return round(soc_added * battery_kwh / 100.0, 2)
+        return round(soc_added * _DEFAULT_BATTERY_KWH / 100.0, 2)
 
     @property
     def time_until_full_minutes(self) -> int | None:
@@ -1311,10 +1314,7 @@ class BydDataUpdateCoordinator(DataUpdateCoordinator[VehicleSnapshot]):
                 power_w = abs(float(gl))
         if power_w is None or power_w < 500:
             return None
-        # Battery capacity defaults to Sealion 7 Comfort 82.5 kWh.
-        # When pyBYD adds per-model capacity metadata, swap here.
-        battery_kwh = 82.5
-        kwh_remaining = battery_kwh * remaining_soc / 100.0
+        kwh_remaining = _DEFAULT_BATTERY_KWH * remaining_soc / 100.0
         minutes = (kwh_remaining * 1000.0 / power_w) * 60.0
         return int(minutes)
 
