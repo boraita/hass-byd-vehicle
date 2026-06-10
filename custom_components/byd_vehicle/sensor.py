@@ -625,6 +625,51 @@ SENSOR_DESCRIPTIONS: tuple[BydSensorDescription, ...] = (
         entity_registry_enabled_default=False,
         entity_category=EntityCategory.DIAGNOSTIC,
     ),
+    # Trip tracking — baseline captured on power-ON (persisted across HA
+    # restarts via Store) plus live distance.  The ON→OFF transition also
+    # fires the :event:`byd_vehicle_power_changed` HA event with a full
+    # trip summary for automations.
+    BydSensorDescription(
+        key="trip_started_at",
+        name="Trip started at",
+        source="coordinator",
+        attr_key="trip_started_at",
+        device_class=SensorDeviceClass.TIMESTAMP,
+        icon="mdi:car-clock",
+        entity_registry_enabled_default=False,
+    ),
+    BydSensorDescription(
+        key="trip_start_soc",
+        name="Trip start SoC",
+        source="coordinator",
+        attr_key="trip_start_soc",
+        native_unit_of_measurement=PERCENTAGE,
+        icon="mdi:battery-high",
+        entity_registry_enabled_default=False,
+    ),
+    BydSensorDescription(
+        key="trip_distance",
+        name="Trip distance",
+        source="coordinator",
+        attr_key="trip_distance_km",
+        native_unit_of_measurement=UnitOfLength.KILOMETERS,
+        device_class=SensorDeviceClass.DISTANCE,
+        icon="mdi:map-marker-distance",
+        entity_registry_enabled_default=False,
+    ),
+    # State value is the last trip's distance; the full summary (start/end
+    # SoC and odometer, duration, soc_used) rides along as attributes.
+    BydSensorDescription(
+        key="last_trip_distance",
+        name="Last trip distance",
+        source="coordinator",
+        value_fn=lambda c: (c.last_trip or {}).get("distance_km"),
+        state_attrs_fn=lambda c: c.last_trip or {},
+        native_unit_of_measurement=UnitOfLength.KILOMETERS,
+        device_class=SensorDeviceClass.DISTANCE,
+        icon="mdi:map-marker-path",
+        entity_registry_enabled_default=False,
+    ),
     # Timestamp of the latest charging session start (i.e. the last time
     # ``charging.charging_state`` transitioned to 1).  Cleared on plug-out.
     # Useful for "how long has this charge been running" automations.
