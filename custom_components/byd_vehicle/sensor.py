@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import re
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -29,7 +30,9 @@ from homeassistant.const import (
 )
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import entity_registry as er
-from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
+from pybyd.models import BydEnum
+from pybyd.models.hvac import AirConditioningMode, HvacWindMode, HvacWindPosition
 from pybyd.models.realtime import TirePressureUnit
 from pybyd.models.vehicle import EnergyType, Vehicle
 
@@ -48,12 +51,40 @@ FieldValidator = Callable[[Any, Any], Any]
 def keep_previous_when_zero(previous: Any, current: Any) -> Any:
     """Return *previous* when *current* is zero or None.
 
-    Prevents transient ``0 %`` SOC values from showing in the HA UI
-    when the vehicle sends stale/invalid telemetry.
+    Never surfaces a literal ``0``: when *previous* is also missing or zero
+    (stale cache from a sentinel payload), returns ``None`` so the entity
+    reads as ``unavailable`` instead of pinning to ``0``.
     """
     if current is None or current == 0:
+        if previous is None or previous == 0:
+            return None
         return previous
     return current
+
+
+def _estimate_minutes_to_full(realtime: Any) -> int | None:
+    """Minutes to 100% derived from current SoC + AC charge power.
+
+    Mirrors ``BydDataUpdateCoordinator.time_until_full_minutes`` so the
+    realtime-sourced ``full_hour``/``full_minute`` entities can show the
+    same estimate as ``time_until_full``.  Battery capacity hard-coded to
+    the Sealion 7 Comfort 82.5 kWh nameplate.
+    """
+    if realtime is None:
+        return None
+    soc = getattr(realtime, "elec_percent", None)
+    gl = getattr(realtime, "gl", None)
+    if soc is None or gl is None:
+        return None
+    try:
+        soc_f = float(soc)
+        power_w = abs(float(gl))
+    except (TypeError, ValueError):
+        return None
+    if soc_f >= 100 or power_w < 500:
+        return None
+    kwh_remaining = 82.5 * (100.0 - soc_f) / 100.0
+    return int((kwh_remaining * 1000.0 / power_w) * 60.0)
 
 
 def _normalize_epoch(value: Any) -> datetime | None:
@@ -67,31 +98,70 @@ def _normalize_epoch(value: Any) -> datetime | None:
     return None
 
 
-def _normalize_gps_timestamp(
-    gps_timestamp: datetime | None,
-    realtime_timestamp: datetime | None,
+def _snap_whole_hour_offset(
+    value: datetime,
+    reference: datetime | None,
 ) -> datetime | None:
-    """Correct clean whole-hour GPS offsets relative to realtime.
+    """Remove a clean whole-hour offset of *value* relative to *reference*.
 
-    Some vehicles appear to report GPS timestamps with a timezone-style
-    encoding bug that shifts the value by an exact number of whole hours.
-    When the delta vs. realtime is within 5 minutes of a whole-hour
-    offset, subtract that offset; otherwise preserve the original GPS
-    timestamp to avoid over-correcting stale data.
+    Returns the corrected value when the gap between *value* and
+    *reference* is within 5 minutes of a non-zero whole number of hours;
+    otherwise returns ``None`` to signal "no correction applied" (either
+    because there is no reference, the gap is already sub-hour, or it is
+    not close enough to a whole hour to be a timezone-style shift).
     """
-    if gps_timestamp is None or realtime_timestamp is None:
-        return gps_timestamp
+    if reference is None:
+        return None
 
-    delta = gps_timestamp - realtime_timestamp
+    delta = value - reference
     whole_hours = round(delta.total_seconds() / 3600)
     if whole_hours == 0:
-        return gps_timestamp
+        return None
 
     whole_hour_delta = timedelta(hours=whole_hours)
     if abs(delta - whole_hour_delta) > timedelta(minutes=5):
+        return None
+
+    return value - whole_hour_delta
+
+
+def _normalize_gps_timestamp(
+    gps_timestamp: datetime | None,
+    realtime_timestamp: datetime | None,
+    now: datetime | None = None,
+) -> datetime | None:
+    """Correct clean whole-hour GPS offsets.
+
+    Some vehicles report GPS timestamps with a timezone-style encoding
+    bug that shifts the value by an exact number of whole hours.  Two
+    references are tried, in order:
+
+    1. The realtime payload timestamp — catches a shift that affects
+       only the GPS section (the common case the original fix handled).
+    2. The wall clock (*now*) — catches a *feed-wide* shift where the
+       realtime timestamp carries the **same** offset, so the
+       GPS-vs-realtime delta is ~0 and step 1 finds nothing.  This step
+       only fires when the GPS timestamp lies in the *future*: a
+       satellite fix can never be dated after the moment we received it,
+       so a whole-hour future offset is unambiguously the encoding bug,
+       whereas a past timestamp may simply be a stale/preserved fix and
+       is left untouched to avoid over-correcting.
+    """
+    if gps_timestamp is None:
         return gps_timestamp
 
-    return gps_timestamp - whole_hour_delta
+    corrected = _snap_whole_hour_offset(gps_timestamp, realtime_timestamp)
+    if corrected is not None:
+        return corrected
+
+    if now is None:
+        now = datetime.now(tz=UTC)
+    if gps_timestamp > now:
+        corrected = _snap_whole_hour_offset(gps_timestamp, now)
+        if corrected is not None:
+            return corrected
+
+    return gps_timestamp
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -109,6 +179,26 @@ class BydSensorDescription(SensorEntityDescription):
     unavailable.  Returning ``False`` produces an HA "unavailable" state
     even when the source object exists (e.g. for the schedule-end-time
     sensor when the schedule is set to charge until full)."""
+
+    state_change_gate: Callable[[Any], bool] | None = None
+    """Predicate that suppresses state changes while it returns ``True``.
+
+    Called with the BydSensor entity on every resolution.  When it
+    returns ``True`` the entity keeps reporting its previous value
+    instead of the newly computed one — useful when a derived consumer
+    is going to interpret deltas during certain periods incorrectly.
+
+    Concrete case: downstream telemetry consumers (ABRP, Teslamate-style
+    trackers, etc.) compute total trip distance from
+    ``sum(delta(odometer))`` and average speed from
+    ``delta(odometer)/delta(time)``.  The BYD API only reports integer
+    kilometre values for the odometer, so each transition arrives as a
+    1-2 km jump every 30-60 s.  A consumer pushed those raw values
+    every 10 s reads back ``2181 km`` in a 4-hour day where the car
+    really did ~350 km (verified on the user's 2026-05-25 trip
+    summary).  Holding the published value constant during the trip
+    and only re-snapshotting once the trip ends gives the consumer
+    one clean delta per trip — distance and speed both come out right."""
 
 
 def _round_int_attr(attr: str) -> Callable[[Any], int | None]:
@@ -155,22 +245,6 @@ def _parse_numeric_string(attr: str) -> Callable[[Any], float | None]:
     return _convert
 
 
-def _positive_float_attr(attr: str) -> Callable[[Any], float | None]:
-    """Create a converter returning *None* for negative sentinel values.
-
-    The BYD API uses ``-1`` as a "not available" marker for several
-    numeric fields (e.g. ``oilEndurance``).
-    """
-
-    def _convert(obj: Any) -> float | None:
-        value = getattr(obj, attr, None)
-        if value is None or value < 0:
-            return None
-        return float(value)
-
-    return _convert
-
-
 def _attr_getter(name: str) -> Callable[[Any], Any]:
     """Return a callable that reads attribute *name* from a source object."""
 
@@ -180,6 +254,36 @@ def _attr_getter(name: str) -> Callable[[Any], Any]:
         return getattr(obj, name, None)
 
     return _get
+
+
+def _raw_dump_attrs(obj: Any) -> dict[str, Any]:
+    """JSON-stringify a model's raw dict for safe attribute exposure.
+
+    HA drops attributes that aren't natively JSON-serialisable.  Stringifying
+    the dump puts everything in a single ``raw`` attribute the user can copy.
+    """
+    if obj is None:
+        return {}
+    raw = getattr(obj, "raw", None)
+    if not isinstance(raw, dict) or not raw:
+        return {}
+    try:
+        encoded = json.dumps(raw, default=str, ensure_ascii=False)
+    except (TypeError, ValueError):
+        return {}
+    return {"raw_json": encoded, "key_count": len(raw)}
+
+
+def _hvac_enum_name(enum_cls: type[BydEnum], value: Any) -> str | None:
+    """Coerce a raw HVAC enum field (kept as ``int`` by pydantic's
+    ``Enum | int`` smart-union) into the lowercase enum name.
+
+    Returns ``None`` only when the field is absent.  ``BydEnum._missing_``
+    maps unmapped ints to ``UNKNOWN`` so this never raises.
+    """
+    if value is None:
+        return None
+    return enum_cls(value).name.lower()
 
 
 _WEEKDAY_LABELS: tuple[str, ...] = (
@@ -397,6 +501,36 @@ SENSOR_DESCRIPTIONS: tuple[BydSensorDescription, ...] = (
         icon="mdi:counter",
         value_fn=_round_int_attr("total_mileage"),
     ),
+    # Companion odometer for downstream telemetry consumers.  The raw
+    # ``total_mileage`` ticks in 1-2 km increments every 30-60 s
+    # because the BYD API only exposes integer kilometres.  A consumer
+    # pushed those values every 10 s (ABRP default) reads back wildly
+    # inflated totals — one user's 2026-05-25 trip showed up as 2181 km
+    # / 4h on ABRP for a real ~350 km / 4h day.
+    #
+    # ``state_change_gate`` keeps this entity sticky while
+    # ``realtime.is_vehicle_on`` is True: a single delta per trip
+    # (snapshot at trip start → next snapshot when the car powers off)
+    # gives the consumer the right distance and speed without
+    # interpolating fake decimals.  Disabled by default; users with
+    # telemetry integrations repoint ABRP at this entity.
+    BydSensorDescription(
+        key="total_mileage_smoothed",
+        name="Total mileage (smoothed)",
+        source="realtime",
+        native_unit_of_measurement=UnitOfLength.KILOMETERS,
+        suggested_display_precision=0,
+        device_class=SensorDeviceClass.DISTANCE,
+        state_class=SensorStateClass.TOTAL_INCREASING,
+        icon="mdi:counter",
+        value_fn=_round_int_attr("total_mileage"),
+        state_change_gate=lambda entity: bool(
+            entity._get_realtime()
+            and getattr(entity._get_realtime(), "is_vehicle_on", False)
+        ),
+        entity_registry_enabled_default=False,
+        entity_category=EntityCategory.DIAGNOSTIC,
+    ),
     BydSensorDescription(
         key="speed",
         source="realtime",
@@ -413,8 +547,49 @@ SENSOR_DESCRIPTIONS: tuple[BydSensorDescription, ...] = (
         device_class=SensorDeviceClass.TEMPERATURE,
         state_class=SensorStateClass.MEASUREMENT,
         value_fn=lambda obj: (
-            int(round(obj.temp_in_car)) if obj.temp_in_car is not None else 0
+            int(round(obj.temp_in_car)) if obj.temp_in_car is not None else None
         ),
+        validator_fn=keep_previous_when_zero,
+    ),
+    # Per-window opening percentage (0-100).  Sealion 7 EU reports 10
+    # after the OPEN_WINDOWS vent command and 100 on full drop.  Off
+    # by default — most users only care about the boolean state
+    # exposed by the matching binary_sensor.
+    BydSensorDescription(
+        key="left_front_window_pct",
+        source="realtime",
+        native_unit_of_measurement=PERCENTAGE,
+        state_class=SensorStateClass.MEASUREMENT,
+        icon="mdi:car-door",
+        entity_registry_enabled_default=False,
+        entity_category=EntityCategory.DIAGNOSTIC,
+    ),
+    BydSensorDescription(
+        key="right_front_window_pct",
+        source="realtime",
+        native_unit_of_measurement=PERCENTAGE,
+        state_class=SensorStateClass.MEASUREMENT,
+        icon="mdi:car-door",
+        entity_registry_enabled_default=False,
+        entity_category=EntityCategory.DIAGNOSTIC,
+    ),
+    BydSensorDescription(
+        key="left_rear_window_pct",
+        source="realtime",
+        native_unit_of_measurement=PERCENTAGE,
+        state_class=SensorStateClass.MEASUREMENT,
+        icon="mdi:car-door",
+        entity_registry_enabled_default=False,
+        entity_category=EntityCategory.DIAGNOSTIC,
+    ),
+    BydSensorDescription(
+        key="right_rear_window_pct",
+        source="realtime",
+        native_unit_of_measurement=PERCENTAGE,
+        state_class=SensorStateClass.MEASUREMENT,
+        icon="mdi:car-door",
+        entity_registry_enabled_default=False,
+        entity_category=EntityCategory.DIAGNOSTIC,
     ),
     # Tire pressures – unit resolved dynamically from tire_press_unit;
     # kPa is the default because most BYD vehicles report tirePressUnit=3.
@@ -470,6 +645,7 @@ SENSOR_DESCRIPTIONS: tuple[BydSensorDescription, ...] = (
         device_class=SensorDeviceClass.TEMPERATURE,
         state_class=SensorStateClass.MEASUREMENT,
         value_fn=_round_int_attr("temp_out_car"),
+        validator_fn=keep_previous_when_zero,
     ),
     BydSensorDescription(
         key="pm",
@@ -477,6 +653,7 @@ SENSOR_DESCRIPTIONS: tuple[BydSensorDescription, ...] = (
         native_unit_of_measurement="µg/m³",
         device_class=SensorDeviceClass.PM25,
         state_class=SensorStateClass.MEASUREMENT,
+        validator_fn=keep_previous_when_zero,
     ),
     # ===========================================================
     # Realtime: disabled by default (diagnostic / secondary data)
@@ -683,6 +860,14 @@ SENSOR_DESCRIPTIONS: tuple[BydSensorDescription, ...] = (
         entity_registry_enabled_default=False,
         entity_category=EntityCategory.DIAGNOSTIC,
     ),
+    # The charge_session_* family is only meaningful while a session is
+    # actually in progress.  When there's no session the coordinator
+    # properties return None, but with ``validator_fn=keep_previous_when_zero``
+    # the RestoreSensor preserved the prior session's value across HA
+    # restarts (saw duration=593 / soc_added=11 / kwh_added=9.07 lingering
+    # for days on a Sealion 7 EU well after the charge ended).  Gate
+    # availability on the live ``charge_session_started_at`` instead so
+    # the entity reads ``unavailable`` between sessions.
     BydSensorDescription(
         key="charge_session_duration",
         name="Charge session duration",
@@ -691,6 +876,9 @@ SENSOR_DESCRIPTIONS: tuple[BydSensorDescription, ...] = (
         native_unit_of_measurement=UnitOfTime.MINUTES,
         icon="mdi:timer",
         entity_registry_enabled_default=False,
+        available_fn=lambda c: (
+            c is not None and getattr(c, "charge_session_started_at", None) is not None
+        ),
     ),
     BydSensorDescription(
         key="charge_session_soc_added",
@@ -700,12 +888,10 @@ SENSOR_DESCRIPTIONS: tuple[BydSensorDescription, ...] = (
         native_unit_of_measurement=PERCENTAGE,
         icon="mdi:battery-arrow-up",
         entity_registry_enabled_default=False,
+        available_fn=lambda c: (
+            c is not None and getattr(c, "charge_session_started_at", None) is not None
+        ),
     ),
-    # Energy delivered to the battery this session, derived from the SoC
-    # delta times the Sealion 7 Comfort nameplate capacity (82.5 kWh).
-    # Works for any charging source — V2C, public AC, public DC — since
-    # the cloud reports the SoC field regardless of where the energy
-    # came from.  Coarse: rounding error is in the few-hundred-Wh range.
     BydSensorDescription(
         key="charge_session_kwh_added",
         name="Charge session kWh added",
@@ -716,6 +902,9 @@ SENSOR_DESCRIPTIONS: tuple[BydSensorDescription, ...] = (
         state_class=SensorStateClass.TOTAL,
         icon="mdi:lightning-bolt-circle",
         entity_registry_enabled_default=False,
+        available_fn=lambda c: (
+            c is not None and getattr(c, "charge_session_started_at", None) is not None
+        ),
     ),
     BydSensorDescription(
         key="time_until_full",
@@ -746,6 +935,23 @@ SENSOR_DESCRIPTIONS: tuple[BydSensorDescription, ...] = (
         entity_registry_enabled_default=False,
         entity_category=EntityCategory.DIAGNOSTIC,
     ),
+    BydSensorDescription(
+        key="last_energy_fetch_at",
+        name="Last energy fetch at",
+        source="coordinator",
+        attr_key="last_energy_fetch_at",
+        device_class=SensorDeviceClass.TIMESTAMP,
+        icon="mdi:download-circle",
+        entity_category=EntityCategory.DIAGNOSTIC,
+    ),
+    BydSensorDescription(
+        key="last_energy_fetch_status",
+        name="Last energy fetch status",
+        source="coordinator",
+        attr_key="last_energy_fetch_status",
+        icon="mdi:cloud-question",
+        entity_category=EntityCategory.DIAGNOSTIC,
+    ),
     # NOTE: ``charge_state`` (from ``realtime``) and ``charging_state`` (from
     # the smart-charging endpoint) report the same numeric value on most
     # VINs, which makes them look duplicated in the UI.  We keep
@@ -760,65 +966,22 @@ SENSOR_DESCRIPTIONS: tuple[BydSensorDescription, ...] = (
         entity_registry_enabled_default=False,
         entity_category=EntityCategory.DIAGNOSTIC,
     ),
-    BydSensorDescription(
-        key="full_hour",
-        source="realtime",
-        native_unit_of_measurement=UnitOfTime.HOURS,
-        device_class=SensorDeviceClass.DURATION,
-        state_class=SensorStateClass.MEASUREMENT,
-        icon="mdi:clock-outline",
-        entity_registry_enabled_default=False,
-        entity_category=EntityCategory.DIAGNOSTIC,
-    ),
-    BydSensorDescription(
-        key="full_minute",
-        source="realtime",
-        native_unit_of_measurement=UnitOfTime.MINUTES,
-        device_class=SensorDeviceClass.DURATION,
-        state_class=SensorStateClass.MEASUREMENT,
-        icon="mdi:clock-outline",
-        entity_registry_enabled_default=False,
-        entity_category=EntityCategory.DIAGNOSTIC,
-    ),
-    BydSensorDescription(
-        key="remaining_hours",
-        source="realtime",
-        native_unit_of_measurement=UnitOfTime.HOURS,
-        device_class=SensorDeviceClass.DURATION,
-        state_class=SensorStateClass.MEASUREMENT,
-        icon="mdi:clock-outline",
-        entity_registry_enabled_default=False,
-        entity_category=EntityCategory.DIAGNOSTIC,
-    ),
-    BydSensorDescription(
-        key="remaining_minutes",
-        source="realtime",
-        native_unit_of_measurement=UnitOfTime.MINUTES,
-        device_class=SensorDeviceClass.DURATION,
-        state_class=SensorStateClass.MEASUREMENT,
-        icon="mdi:clock-outline",
-        entity_registry_enabled_default=False,
-        entity_category=EntityCategory.DIAGNOSTIC,
-    ),
-    # Combined ``remaining_hours``/``remaining_minutes`` realtime fields,
-    # rendered as a single ``HH:MM`` string.  Only populates while
-    # actively charging — both source fields are ``-1`` (sentinel)
-    # otherwise, so the sensor stays unavailable instead of showing
-    # ``00:00``.  ``full_hour``/``full_minute`` always read ``-1`` even
-    # mid-charge per the active-charging capture, so they're unused.
+    # NOTE: the per-component charge-time sensors (full_hour, full_minute,
+    # remaining_hours, remaining_minutes) were retired as redundant — they
+    # all derive from the same _estimate_minutes_to_full().  Keep
+    # ``time_until_full`` (minutes, coordinator) and ``charge_remaining_time``
+    # (HH:MM) as the canonical pair.  Old registry entries are cleaned up via
+    # ``_LEGACY_SENSOR_UNIQUE_ID_REMOVALS`` below.
+    # Combined remaining time rendered ``HH:MM``.  Uses the same
+    # power-based estimate as the components above so the dashboard
+    # stays coherent.  ``"00:00"`` when not actively charging.
     BydSensorDescription(
         key="charge_remaining_time",
         source="realtime",
-        # No ``available_fn``: report ``"00:00"`` when not charging so the
-        # sensor stays in a meaningful state instead of jumping to
-        # ``unavailable``.  ``remaining_hours``/``remaining_minutes`` are
-        # ``-1`` (normalised to ``None``) when no charge session is active.
         value_fn=lambda obj: (
-            f"{obj.remaining_hours:02d}:{obj.remaining_minutes:02d}"
-            if obj is not None
-            and obj.remaining_hours is not None
-            and obj.remaining_minutes is not None
-            else "00:00"
+            "00:00"
+            if (m := _estimate_minutes_to_full(obj)) is None
+            else f"{m // 60:02d}:{m % 60:02d}"
         ),
         icon="mdi:battery-clock",
         entity_category=EntityCategory.DIAGNOSTIC,
@@ -853,7 +1016,8 @@ SENSOR_DESCRIPTIONS: tuple[BydSensorDescription, ...] = (
         device_class=SensorDeviceClass.DISTANCE,
         state_class=SensorStateClass.MEASUREMENT,
         icon="mdi:gas-station",
-        entity_registry_enabled_default=True,
+        # Fuel/oil sensors are meaningless on a BEV — off by default.
+        entity_registry_enabled_default=False,
         value_fn=_round_int_attr("oil_endurance"),
     ),
     BydSensorDescription(
@@ -862,7 +1026,8 @@ SENSOR_DESCRIPTIONS: tuple[BydSensorDescription, ...] = (
         native_unit_of_measurement=PERCENTAGE,
         state_class=SensorStateClass.MEASUREMENT,
         icon="mdi:gas-station",
-        entity_registry_enabled_default=True,
+        # Fuel/oil sensors are meaningless on a BEV — off by default.
+        entity_registry_enabled_default=False,
     ),
     BydSensorDescription(
         key="total_oil",
@@ -876,13 +1041,6 @@ SENSOR_DESCRIPTIONS: tuple[BydSensorDescription, ...] = (
         key="engine_status",
         source="realtime",
         icon="mdi:engine",
-        entity_registry_enabled_default=False,
-        entity_category=EntityCategory.DIAGNOSTIC,
-    ),
-    BydSensorDescription(
-        key="epb",
-        source="realtime",
-        icon="mdi:car-brake-parking",
         entity_registry_enabled_default=False,
         entity_category=EntityCategory.DIAGNOSTIC,
     ),
@@ -912,6 +1070,119 @@ SENSOR_DESCRIPTIONS: tuple[BydSensorDescription, ...] = (
         icon="mdi:fridge",
         entity_registry_enabled_default=False,
         entity_category=EntityCategory.DIAGNOSTIC,
+    ),
+    BydSensorDescription(
+        key="hvac_wind_mode",
+        source="hvac",
+        attr_key="wind_mode",
+        value_fn=lambda h: (
+            _hvac_enum_name(HvacWindMode, getattr(h, "wind_mode", None))
+            if h is not None
+            else None
+        ),
+        device_class=SensorDeviceClass.ENUM,
+        options=[m.name.lower() for m in HvacWindMode],
+        icon="mdi:fan",
+        entity_registry_enabled_default=False,
+        entity_category=EntityCategory.DIAGNOSTIC,
+    ),
+    BydSensorDescription(
+        key="hvac_wind_position",
+        source="hvac",
+        attr_key="wind_position",
+        value_fn=lambda h: (
+            _hvac_enum_name(HvacWindPosition, getattr(h, "wind_position", None))
+            if h is not None
+            else None
+        ),
+        device_class=SensorDeviceClass.ENUM,
+        options=[m.name.lower() for m in HvacWindPosition],
+        icon="mdi:air-conditioner",
+        entity_registry_enabled_default=False,
+        entity_category=EntityCategory.DIAGNOSTIC,
+    ),
+    BydSensorDescription(
+        key="hvac_ac_mode",
+        source="hvac",
+        attr_key="air_conditioning_mode",
+        value_fn=lambda h: (
+            _hvac_enum_name(
+                AirConditioningMode, getattr(h, "air_conditioning_mode", None)
+            )
+            if h is not None
+            else None
+        ),
+        device_class=SensorDeviceClass.ENUM,
+        options=[m.name.lower() for m in AirConditioningMode],
+        icon="mdi:air-conditioner",
+        entity_registry_enabled_default=False,
+        entity_category=EntityCategory.DIAGNOSTIC,
+    ),
+    BydSensorDescription(
+        key="front_defrost_status",
+        source="hvac",
+        attr_key="front_defrost_status",
+        icon="mdi:car-defrost-front",
+        entity_registry_enabled_default=False,
+        entity_category=EntityCategory.DIAGNOSTIC,
+    ),
+    BydSensorDescription(
+        key="electric_defrost_status",
+        source="hvac",
+        attr_key="electric_defrost_status",
+        icon="mdi:car-defrost-rear",
+        entity_registry_enabled_default=False,
+        entity_category=EntityCategory.DIAGNOSTIC,
+    ),
+    BydSensorDescription(
+        key="wiper_heat_status",
+        source="hvac",
+        attr_key="wiper_heat_status",
+        icon="mdi:wiper",
+        entity_registry_enabled_default=False,
+        entity_category=EntityCategory.DIAGNOSTIC,
+    ),
+    BydSensorDescription(
+        key="rapid_increase_temp",
+        source="hvac",
+        attr_key="rapid_increase_temp_state",
+        icon="mdi:thermometer-chevron-up",
+        entity_registry_enabled_default=False,
+        entity_category=EntityCategory.DIAGNOSTIC,
+    ),
+    BydSensorDescription(
+        key="rapid_decrease_temp",
+        source="hvac",
+        attr_key="rapid_decrease_temp_state",
+        icon="mdi:thermometer-chevron-down",
+        entity_registry_enabled_default=False,
+        entity_category=EntityCategory.DIAGNOSTIC,
+    ),
+    BydSensorDescription(
+        key="hvac_temp_out_car",
+        name="HVAC outside temperature",
+        source="hvac",
+        attr_key="temp_out_car",
+        native_unit_of_measurement=UnitOfTemperature.CELSIUS,
+        device_class=SensorDeviceClass.TEMPERATURE,
+        state_class=SensorStateClass.MEASUREMENT,
+        icon="mdi:thermometer",
+        entity_registry_enabled_default=False,
+        entity_category=EntityCategory.DIAGNOSTIC,
+        validator_fn=keep_previous_when_zero,
+    ),
+    BydSensorDescription(
+        key="hvac_copilot_target_temp",
+        name="HVAC co-pilot target temperature",
+        source="hvac",
+        attr_key="copilot_setting_temp_new",
+        native_unit_of_measurement=UnitOfTemperature.CELSIUS,
+        device_class=SensorDeviceClass.TEMPERATURE,
+        state_class=SensorStateClass.MEASUREMENT,
+        icon="mdi:thermostat",
+        entity_registry_enabled_default=False,
+        entity_category=EntityCategory.DIAGNOSTIC,
+        validator_fn=keep_previous_when_zero,
     ),
     # ==========================================
     # Realtime: additional diagnostic sensors
@@ -994,6 +1265,15 @@ SENSOR_DESCRIPTIONS: tuple[BydSensorDescription, ...] = (
     BydSensorDescription(
         key="power_battery_connection",
         source="realtime",
+        value_fn=lambda obj: (
+            None
+            if obj is None or not isinstance(getattr(obj, "raw", None), dict)
+            else (
+                None
+                if obj.raw.get("powerBatteryConnection", -1) < 0
+                else obj.raw.get("powerBatteryConnection")
+            )
+        ),
         icon="mdi:battery-alert",
         entity_registry_enabled_default=False,
         entity_category=EntityCategory.DIAGNOSTIC,
@@ -1058,7 +1338,7 @@ SENSOR_DESCRIPTIONS: tuple[BydSensorDescription, ...] = (
         ),
         state_class=SensorStateClass.MEASUREMENT,
         icon="mdi:lightning-bolt",
-        entity_registry_enabled_default=False,
+        entity_registry_enabled_default=True,
         entity_category=EntityCategory.DIAGNOSTIC,
     ),
     BydSensorDescription(
@@ -1094,7 +1374,7 @@ SENSOR_DESCRIPTIONS: tuple[BydSensorDescription, ...] = (
         ),
         state_class=SensorStateClass.MEASUREMENT,
         icon="mdi:lightning-bolt",
-        entity_registry_enabled_default=False,
+        entity_registry_enabled_default=True,
         entity_category=EntityCategory.DIAGNOSTIC,
     ),
     BydSensorDescription(
@@ -1136,7 +1416,7 @@ SENSOR_DESCRIPTIONS: tuple[BydSensorDescription, ...] = (
         unit_fn=_attr_getter("ev_value_unit"),
         state_class=SensorStateClass.MEASUREMENT,
         icon="mdi:lightning-bolt",
-        entity_registry_enabled_default=False,
+        entity_registry_enabled_default=True,
         entity_category=EntityCategory.DIAGNOSTIC,
     ),
     BydSensorDescription(
@@ -1222,7 +1502,7 @@ SENSOR_DESCRIPTIONS: tuple[BydSensorDescription, ...] = (
         ),
         state_class=SensorStateClass.MEASUREMENT,
         icon="mdi:chart-line",
-        entity_registry_enabled_default=False,
+        entity_registry_enabled_default=True,
         entity_category=EntityCategory.DIAGNOSTIC,
     ),
     BydSensorDescription(
@@ -1243,7 +1523,7 @@ SENSOR_DESCRIPTIONS: tuple[BydSensorDescription, ...] = (
         ),
         state_class=SensorStateClass.MEASUREMENT,
         icon="mdi:chart-line",
-        entity_registry_enabled_default=False,
+        entity_registry_enabled_default=True,
         entity_category=EntityCategory.DIAGNOSTIC,
     ),
     # --- Smart-charging schedule (sourced from /control/smartCharge/homePage) ---
@@ -1256,7 +1536,7 @@ SENSOR_DESCRIPTIONS: tuple[BydSensorDescription, ...] = (
             else None
         ),
         icon="mdi:calendar-clock",
-        entity_registry_enabled_default=False,
+        entity_registry_enabled_default=True,
         entity_category=EntityCategory.DIAGNOSTIC,
     ),
     BydSensorDescription(
@@ -1274,7 +1554,7 @@ SENSOR_DESCRIPTIONS: tuple[BydSensorDescription, ...] = (
             else None
         ),
         icon="mdi:calendar-clock",
-        entity_registry_enabled_default=False,
+        entity_registry_enabled_default=True,
         entity_category=EntityCategory.DIAGNOSTIC,
     ),
     BydSensorDescription(
@@ -1284,7 +1564,49 @@ SENSOR_DESCRIPTIONS: tuple[BydSensorDescription, ...] = (
             _format_charge_way(obj.charge_way) if obj is not None else None
         ),
         icon="mdi:calendar-refresh",
-        entity_registry_enabled_default=False,
+        entity_registry_enabled_default=True,
+        entity_category=EntityCategory.DIAGNOSTIC,
+    ),
+    BydSensorDescription(
+        key="departure_target_time",
+        name="Departure target time",
+        source="charging_schedule_journey",
+        available_fn=lambda obj: (obj is not None and obj.use_vehicle_time is not None),
+        value_fn=lambda obj: (
+            obj.use_vehicle_time.strftime("%H:%M")
+            if obj is not None and obj.use_vehicle_time is not None
+            else None
+        ),
+        icon="mdi:car-clock",
+        entity_registry_enabled_default=True,
+        entity_category=EntityCategory.DIAGNOSTIC,
+    ),
+    BydSensorDescription(
+        key="discount_window_start",
+        name="Off-peak window start",
+        source="charging_schedule_journey",
+        available_fn=lambda obj: (obj is not None and obj.discount_start is not None),
+        value_fn=lambda obj: (
+            obj.discount_start.strftime("%H:%M")
+            if obj is not None and obj.discount_start is not None
+            else None
+        ),
+        icon="mdi:cash-clock",
+        entity_registry_enabled_default=True,
+        entity_category=EntityCategory.DIAGNOSTIC,
+    ),
+    BydSensorDescription(
+        key="discount_window_end",
+        name="Off-peak window end",
+        source="charging_schedule_journey",
+        available_fn=lambda obj: (obj is not None and obj.discount_end is not None),
+        value_fn=lambda obj: (
+            obj.discount_end.strftime("%H:%M")
+            if obj is not None and obj.discount_end is not None
+            else None
+        ),
+        icon="mdi:cash-clock",
+        entity_registry_enabled_default=True,
         entity_category=EntityCategory.DIAGNOSTIC,
     ),
     # =============================================
@@ -1303,6 +1625,7 @@ SENSOR_DESCRIPTIONS: tuple[BydSensorDescription, ...] = (
         state_class=SensorStateClass.MEASUREMENT,
         icon="mdi:thermostat",
         entity_registry_enabled_default=False,
+        validator_fn=keep_previous_when_zero,
     ),
     # Air recirculation mode (external = fresh air, internal = recirculate).
     # The HVAC component already exposes this indirectly but having it as a
@@ -1314,7 +1637,7 @@ SENSOR_DESCRIPTIONS: tuple[BydSensorDescription, ...] = (
         source="realtime",
         value_fn=lambda obj: (
             {1: "external", 2: "internal"}.get(
-                getattr(getattr(obj, "air_run_state", None), "value", None)
+                getattr(getattr(obj, "air_run_state", None), "value", None)  # type: ignore[arg-type]
             )
             if obj is not None
             else None
@@ -1322,7 +1645,7 @@ SENSOR_DESCRIPTIONS: tuple[BydSensorDescription, ...] = (
         device_class=SensorDeviceClass.ENUM,
         options=["external", "internal"],
         icon="mdi:air-filter",
-        entity_registry_enabled_default=False,
+        entity_registry_enabled_default=True,
     ),
     # Battery preheating state during DC charging.  Distinct from
     # `battery_heating` binary which only reports on/off — this exposes
@@ -1345,6 +1668,371 @@ SENSOR_DESCRIPTIONS: tuple[BydSensorDescription, ...] = (
         source="realtime",
         attr_key="eq_consumption",
         icon="mdi:lightning-bolt-outline",
+        entity_registry_enabled_default=False,
+        entity_category=EntityCategory.DIAGNOSTIC,
+    ),
+    BydSensorDescription(
+        key="power_gear",
+        name="Power gear",
+        source="realtime",
+        value_fn=lambda obj: (
+            {1: "off", 3: "on"}.get(
+                getattr(getattr(obj, "power_gear", None), "value", None)  # type: ignore[arg-type]
+            )
+            if obj is not None
+            else None
+        ),
+        device_class=SensorDeviceClass.ENUM,
+        options=["off", "on"],
+        icon="mdi:car-shift-pattern",
+        entity_registry_enabled_default=False,
+        entity_category=EntityCategory.DIAGNOSTIC,
+    ),
+    BydSensorDescription(
+        key="oil_pressure_system",
+        name="Oil pressure system",
+        source="realtime",
+        attr_key="oil_pressure_system",
+        icon="mdi:oil",
+        entity_registry_enabled_default=False,
+        entity_category=EntityCategory.DIAGNOSTIC,
+    ),
+    BydSensorDescription(
+        key="booking_charge_state",
+        name="Booking charge state",
+        source="realtime",
+        attr_key="booking_charge_state",
+        icon="mdi:calendar-clock",
+        entity_registry_enabled_default=False,
+        entity_category=EntityCategory.DIAGNOSTIC,
+    ),
+    BydSensorDescription(
+        key="booking_charging_hour",
+        name="Booking charging hour",
+        source="realtime",
+        attr_key="booking_charging_hour",
+        icon="mdi:clock-outline",
+        entity_registry_enabled_default=False,
+        entity_category=EntityCategory.DIAGNOSTIC,
+    ),
+    BydSensorDescription(
+        key="booking_charging_minute",
+        name="Booking charging minute",
+        source="realtime",
+        attr_key="booking_charging_minute",
+        icon="mdi:clock-outline",
+        entity_registry_enabled_default=False,
+        entity_category=EntityCategory.DIAGNOSTIC,
+    ),
+    BydSensorDescription(
+        key="rear_left_third_seat_heating",
+        name="Rear left 3rd-row seat heating",
+        source="realtime",
+        value_fn=lambda obj: (
+            getattr(getattr(obj, "lr_third_heat_state", None), "name", None)
+            if obj is not None
+            else None
+        ),
+        icon="mdi:car-seat-heater",
+        entity_registry_enabled_default=False,
+        entity_category=EntityCategory.DIAGNOSTIC,
+    ),
+    BydSensorDescription(
+        key="rear_right_third_seat_heating",
+        name="Rear right 3rd-row seat heating",
+        source="realtime",
+        value_fn=lambda obj: (
+            getattr(getattr(obj, "rr_third_heat_state", None), "name", None)
+            if obj is not None
+            else None
+        ),
+        icon="mdi:car-seat-heater",
+        entity_registry_enabled_default=False,
+        entity_category=EntityCategory.DIAGNOSTIC,
+    ),
+    BydSensorDescription(
+        key="vehicle_raw",
+        name="Vehicle raw (diagnostic)",
+        source="vehicle",
+        value_fn=lambda v: (
+            len(v.raw)
+            if v is not None and isinstance(getattr(v, "raw", None), dict)
+            else None
+        ),
+        state_attrs_fn=_raw_dump_attrs,
+        icon="mdi:database-search",
+        entity_registry_enabled_default=False,
+        entity_category=EntityCategory.DIAGNOSTIC,
+    ),
+    BydSensorDescription(
+        key="charge_curve",
+        name="Charge curve",
+        source="coordinator",
+        native_unit_of_measurement=UnitOfPower.KILO_WATT,
+        device_class=SensorDeviceClass.POWER,
+        state_class=SensorStateClass.MEASUREMENT,
+        value_fn=lambda c: (
+            c.charge_curve[-1].get("kw")
+            if c is not None
+            and hasattr(c, "charge_curve")
+            and c.charge_curve
+            and c.charge_curve[-1].get("kw") is not None
+            else None
+        ),
+        state_attrs_fn=lambda c: (
+            {
+                "samples": c.charge_curve[-50:],
+                "sample_count": len(c.charge_curve),
+            }
+            if c is not None and hasattr(c, "charge_curve")
+            else {}
+        ),
+        icon="mdi:chart-line",
+        entity_registry_enabled_default=False,
+        entity_category=EntityCategory.DIAGNOSTIC,
+    ),
+    BydSensorDescription(
+        key="charge_sessions",
+        name="Charge sessions (last 10)",
+        source="coordinator",
+        value_fn=lambda c: (
+            len(c.charge_sessions)
+            if c is not None and hasattr(c, "charge_sessions")
+            else 0
+        ),
+        state_attrs_fn=lambda c: (
+            {"sessions": c.charge_sessions}
+            if c is not None and hasattr(c, "charge_sessions")
+            else {}
+        ),
+        icon="mdi:history",
+        entity_registry_enabled_default=False,
+        entity_category=EntityCategory.DIAGNOSTIC,
+    ),
+    BydSensorDescription(
+        key="realtime_raw",
+        name="Realtime raw (diagnostic)",
+        source="realtime",
+        value_fn=lambda v: (
+            len(v.raw)
+            if v is not None and isinstance(getattr(v, "raw", None), dict)
+            else None
+        ),
+        state_attrs_fn=_raw_dump_attrs,
+        icon="mdi:database-search",
+        entity_registry_enabled_default=False,
+        entity_category=EntityCategory.DIAGNOSTIC,
+    ),
+    BydSensorDescription(
+        key="latest_config_raw",
+        name="Latest config raw (diagnostic)",
+        source="coordinator",
+        value_fn=lambda c: (
+            len(getattr(getattr(c.car, "capabilities", None), "function_nos", []) or [])
+            if c is not None and getattr(c, "car", None) is not None
+            else 0
+        ),
+        state_attrs_fn=lambda c: (
+            {
+                "function_nos": getattr(c.car.capabilities, "function_nos", []),
+                "codes": getattr(c.car.capabilities, "codes", []),
+                "unknown_function_nos": getattr(
+                    c.car.capabilities, "unknown_function_nos", []
+                ),
+                "raw_json": json.dumps(
+                    getattr(c.car.capabilities, "raw", {}) or {},
+                    default=str,
+                    ensure_ascii=False,
+                ),
+            }
+            if c is not None
+            and getattr(c, "car", None) is not None
+            and getattr(c.car, "capabilities", None) is not None
+            else {}
+        ),
+        icon="mdi:database-search",
+        entity_registry_enabled_default=False,
+        entity_category=EntityCategory.DIAGNOSTIC,
+    ),
+    BydSensorDescription(
+        key="config_version_at",
+        name="Config version at",
+        source="coordinator",
+        value_fn=lambda c: (
+            datetime.fromtimestamp(
+                getattr(c.car.capabilities, "raw", {}).get("configVersion"),  # type: ignore[arg-type]
+                tz=UTC,
+            )
+            if c is not None
+            and getattr(c, "car", None) is not None
+            and getattr(c.car, "capabilities", None) is not None
+            and isinstance(getattr(c.car.capabilities, "raw", None), dict)
+            and isinstance(c.car.capabilities.raw.get("configVersion"), int)
+            and c.car.capabilities.raw.get("configVersion") > 0
+            else None
+        ),
+        device_class=SensorDeviceClass.TIMESTAMP,
+        icon="mdi:cog-clockwise",
+        entity_registry_enabled_default=False,
+        entity_category=EntityCategory.DIAGNOSTIC,
+    ),
+    BydSensorDescription(
+        key="charge_state_extended",
+        name="Charge state (extended)",
+        source="realtime",
+        attr_key="charge_state",
+        icon="mdi:battery-charging-outline",
+        entity_registry_enabled_default=False,
+        entity_category=EntityCategory.DIAGNOSTIC,
+    ),
+    BydSensorDescription(
+        key="light_stop_status",
+        name="Light stop status",
+        source="realtime",
+        value_fn=lambda obj: (
+            obj.raw.get("lightStopStatus")
+            if obj is not None and isinstance(getattr(obj, "raw", None), dict)
+            else None
+        ),
+        icon="mdi:car-traction-control",
+        entity_registry_enabled_default=False,
+        entity_category=EntityCategory.DIAGNOSTIC,
+    ),
+    BydSensorDescription(
+        key="forehold",
+        name="Forehold",
+        source="realtime",
+        value_fn=lambda obj: (
+            obj.raw.get("forehold")
+            if obj is not None and isinstance(getattr(obj, "raw", None), dict)
+            else None
+        ),
+        icon="mdi:car-cruise-control",
+        entity_registry_enabled_default=False,
+        entity_category=EntityCategory.DIAGNOSTIC,
+    ),
+    BydSensorDescription(
+        key="epb",
+        name="Electronic parking brake",
+        source="realtime",
+        value_fn=lambda obj: (
+            None
+            if obj is None or not isinstance(getattr(obj, "raw", None), dict)
+            else (None if obj.raw.get("epb", -1) < 0 else obj.raw.get("epb"))
+        ),
+        icon="mdi:car-brake-parking",
+        entity_registry_enabled_default=False,
+        entity_category=EntityCategory.DIAGNOSTIC,
+    ),
+    BydSensorDescription(
+        key="sentry_status_raw",
+        name="Sentry status (raw)",
+        source="realtime",
+        attr_key="sentry_status",
+        icon="mdi:shield-car",
+        entity_registry_enabled_default=False,
+        entity_category=EntityCategory.DIAGNOSTIC,
+    ),
+    BydSensorDescription(
+        key="sentry_status_label",
+        name="Sentry status",
+        source="realtime",
+        value_fn=lambda r: (
+            {0: "off", 1: "standby", 2: "armed"}.get(
+                getattr(r, "sentry_status", None)  # type: ignore[arg-type]
+            )
+            if r is not None
+            else None
+        ),
+        device_class=SensorDeviceClass.ENUM,
+        options=["off", "standby", "armed"],
+        icon="mdi:shield-car",
+        entity_category=EntityCategory.DIAGNOSTIC,
+    ),
+    BydSensorDescription(
+        key="mqtt_event_log",
+        name="MQTT event log",
+        source="coordinator",
+        value_fn=lambda c: (
+            sum((c._api.mqtt_event_counters or {}).values())
+            if c is not None and getattr(c, "_api", None) is not None
+            else 0
+        ),
+        state_attrs_fn=lambda c: (
+            {
+                "by_event": c._api.mqtt_event_counters,
+                "last_samples": c._api.mqtt_event_samples[-30:],
+            }
+            if c is not None and getattr(c, "_api", None) is not None
+            else {}
+        ),
+        icon="mdi:message-arrow-left",
+        entity_registry_enabled_default=False,
+        entity_category=EntityCategory.DIAGNOSTIC,
+    ),
+    BydSensorDescription(
+        key="gps_speed",
+        name="GPS speed",
+        source="gps",
+        attr_key="speed",
+        native_unit_of_measurement=UnitOfSpeed.KILOMETERS_PER_HOUR,
+        device_class=SensorDeviceClass.SPEED,
+        state_class=SensorStateClass.MEASUREMENT,
+        icon="mdi:speedometer",
+        entity_registry_enabled_default=False,
+        entity_category=EntityCategory.DIAGNOSTIC,
+    ),
+    BydSensorDescription(
+        key="gps_heading",
+        name="GPS heading",
+        source="gps",
+        attr_key="direction",
+        native_unit_of_measurement="°",
+        suggested_display_precision=0,
+        state_class=SensorStateClass.MEASUREMENT,
+        icon="mdi:compass",
+        entity_registry_enabled_default=False,
+        entity_category=EntityCategory.DIAGNOSTIC,
+    ),
+    BydSensorDescription(
+        key="license_plate",
+        name="License plate",
+        source="vehicle",
+        attr_key="auto_plate",
+        icon="mdi:card-text",
+        entity_registry_enabled_default=False,
+        entity_category=EntityCategory.DIAGNOSTIC,
+    ),
+    BydSensorDescription(
+        key="vehicle_activation_date",
+        name="Vehicle activation date",
+        source="vehicle",
+        attr_key="auto_bought_time",
+        device_class=SensorDeviceClass.TIMESTAMP,
+        icon="mdi:calendar-check",
+        entity_registry_enabled_default=False,
+        entity_category=EntityCategory.DIAGNOSTIC,
+    ),
+    BydSensorDescription(
+        key="cloud_activation_date",
+        name="Cloud account activation",
+        source="vehicle",
+        attr_key="yun_active_time",
+        device_class=SensorDeviceClass.TIMESTAMP,
+        icon="mdi:cloud-check",
+        entity_registry_enabled_default=False,
+        entity_category=EntityCategory.DIAGNOSTIC,
+    ),
+    BydSensorDescription(
+        key="car_photo_url",
+        name="Car photo URL",
+        source="vehicle",
+        value_fn=lambda v: (
+            (v.raw.get("cfPic") or {}).get("picMainUrl")
+            if v is not None and isinstance(getattr(v, "raw", None), dict)
+            else None
+        ),
+        icon="mdi:image",
         entity_registry_enabled_default=False,
         entity_category=EntityCategory.DIAGNOSTIC,
     ),
@@ -1382,14 +2070,53 @@ _LEGACY_SENSOR_UNIQUE_ID_REMOVALS: frozenset[str] = frozenset(
         # use ``battery_power`` (reads ``gl``) for the real instantaneous
         # power instead.
         "realtime_total_power",
+        # Redundant per-component charge-time sensors retired in favour of
+        # ``time_until_full`` (minutes) + ``charge_remaining_time`` (HH:MM).
+        "realtime_full_hour",
+        "realtime_full_minute",
+        "realtime_remaining_hours",
+        "realtime_remaining_minutes",
+        # Temporary HVAC raw-dump diagnostic (sealion.71) — removed after capture.
+        "hvac_hvac_raw_debug",
     }
 )
+
+# Sensor descriptor ``key`` values that are known to be permanently
+# unknown on specific VIN prefixes — BYD's cloud does not populate the
+# underlying field on that trim, ever.  Skip registration AND remove any
+# stale registry entries from older versions where the entity existed.
+#
+# Each mapping is ``vin_prefix -> {sensor_key, ...}``.  VIN prefix match
+# is exact-startswith so longer prefixes can be added for sub-trims later
+# without touching shorter ones.
+_VIN_PREFIX_UNSUPPORTED_SENSOR_KEYS: dict[str, frozenset[str]] = {
+    # BYD Sealion 7 Comfort 2024 EU — confirmed over a 30-day capture:
+    #   * ``power_battery`` (realtime) — field never present in payload
+    #   * ``gps_speed`` (gps) — BYD's /getGpsInfo returns ``speed: null``
+    # Both are normally entity_registry_enabled_default=False, but users
+    # who enabled them get a permanent ``unknown`` entity that adds no
+    # information.  Skip outright.
+    "LGXCH4": frozenset(
+        {
+            "power_battery",
+            "gps_speed",
+        }
+    ),
+}
+
+
+def _sensor_unsupported_for_vin(vin: str, key: str) -> bool:
+    """Return True when ``key`` is unsupported for any matching VIN prefix."""
+    for prefix, keys in _VIN_PREFIX_UNSUPPORTED_SENSOR_KEYS.items():
+        if vin.startswith(prefix) and key in keys:
+            return True
+    return False
 
 
 async def async_setup_entry(
     hass: HomeAssistant,
     entry: ConfigEntry,
-    async_add_entities: AddEntitiesCallback,
+    async_add_entities: AddConfigEntryEntitiesCallback,
 ) -> None:
     """Set up BYD sensors from a config entry."""
     data = hass.data[DOMAIN][entry.entry_id]
@@ -1436,6 +2163,17 @@ async def async_setup_entry(
                 and description.attr_key
                 and description.attr_key.endswith("_distribution")
             ):
+                stale_uid = f"{vin}_{description.source}_{description.key}"
+                stale = registry.async_get_entity_id("sensor", DOMAIN, stale_uid)
+                if stale:
+                    registry.async_remove(stale)
+                continue
+            # Skip sensors that we have empirically confirmed never
+            # populate on this VIN prefix (BYD cloud doesn't ship the
+            # underlying field).  Also clean up the stale registry
+            # entry from older versions so a re-install doesn't leave
+            # a permanent ``unknown`` entity on the device card.
+            if _sensor_unsupported_for_vin(vin, description.key):
                 stale_uid = f"{vin}_{description.source}_{description.key}"
                 stale = registry.async_get_entity_id("sensor", DOMAIN, stale_uid)
                 if stale:
@@ -1489,6 +2227,10 @@ class BydSensor(BydVehicleEntity, RestoreSensor):
         self._vehicle = vehicle
         self._attr_unique_id = f"{vin}_{description.source}_{description.key}"
         self._last_native_value: Any | None = None
+        # When rate_limit_seconds is set, track when the published state
+        # last changed so the limiter can decide whether to gate the
+        # next computed value.  Restored from RestoreEntity below.
+        self._last_native_value_at: datetime | None = None
 
         # Auto-disable sensors that return no data on first fetch.
         if description.entity_registry_enabled_default is not False:
@@ -1501,15 +2243,27 @@ class BydSensor(BydVehicleEntity, RestoreSensor):
         The restored value seeds ``_last_native_value`` so that the first
         post-restart coordinator update can still fall through to the
         previous value when the cloud returns a sentinel payload.
+
+        Restoring ``_last_native_value_at`` from the recorded ``last_changed``
+        keeps the rate-limit budget consistent across restarts: a sensor
+        that legitimately settled into ``rate_limit_seconds=300`` mode
+        won't suddenly release a backlog of changes just because HA
+        restarted in the middle of its quiet window.
         """
         await super().async_added_to_hass()
-        if self.entity_description.validator_fn is None:
-            return
+        validator = self.entity_description.validator_fn
         last = await self.async_get_last_sensor_data()
+        last_state = await self.async_get_last_state()
+        if last_state is not None and last_state.last_changed is not None:
+            self._last_native_value_at = last_state.last_changed
+        if validator is None:
+            return
         if last is None:
             return
         restored = last.native_value
         if restored is None:
+            return
+        if validator is keep_previous_when_zero and restored == 0:
             return
         self._last_native_value = restored
 
@@ -1557,7 +2311,25 @@ class BydSensor(BydVehicleEntity, RestoreSensor):
         validator = self.entity_description.validator_fn
         if validator is not None:
             value = validator(self._last_native_value, value)
-        if value is not None:
+
+        # State-change gate: if the predicate currently returns True,
+        # keep reporting the previous value instead of publishing the
+        # new computed one.  See the field docstring for the rationale
+        # (consumer-derived deltas during trips, etc.).
+        gate = self.entity_description.state_change_gate
+        if (
+            gate is not None
+            and self._last_native_value is not None
+            and value != self._last_native_value
+            and gate(self)
+        ):
+            return self._last_native_value
+
+        if value is not None and not (
+            validator is keep_previous_when_zero and value == 0
+        ):
+            if value != self._last_native_value:
+                self._last_native_value_at = datetime.now(tz=UTC)
             self._last_native_value = value
         return value
 

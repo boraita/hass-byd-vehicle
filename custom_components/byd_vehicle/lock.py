@@ -7,7 +7,7 @@ from typing import Any
 from homeassistant.components.lock import LockEntity, LockState
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
-from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 from homeassistant.helpers.restore_state import RestoreEntity
 from pybyd.models.vehicle import Vehicle
 
@@ -19,7 +19,7 @@ from .entity import BydActionEntity
 async def async_setup_entry(
     hass: HomeAssistant,
     entry: ConfigEntry,
-    async_add_entities: AddEntitiesCallback,
+    async_add_entities: AddConfigEntryEntitiesCallback,
 ) -> None:
     """Set up BYD lock entities from a config entry."""
     data = hass.data[DOMAIN][entry.entry_id]
@@ -96,11 +96,20 @@ class BydLock(BydActionEntity, LockEntity, RestoreEntity):
 
     @property
     def assumed_state(self) -> bool:
-        """Return True when lock state is assumed (no realtime data)."""
+        """Return True when lock state is assumed (no realtime data).
+
+        Also treated as assumed while the vehicle is on: BYD reports
+        ``is_locked=True`` during driving because the auto-lock kicks in,
+        which makes the HA control look "already locked" and greys out the
+        lock button when the user actually wants to act on it.  Marking it
+        assumed keeps both lock and unlock controls actionable on park.
+        """
         realtime = self._get_realtime()
         if realtime is None:
             return True
-        return realtime.is_locked is None
+        if realtime.is_locked is None:
+            return True
+        return bool(getattr(realtime, "is_vehicle_on", False))
 
     async def async_lock(self, **_: Any) -> None:
         """Lock the vehicle."""

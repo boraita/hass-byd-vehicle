@@ -204,6 +204,105 @@
       },
       "vehicle_time_zone": {
         "name": "Vehicle time zone"
+      },
+      "hvac_wind_mode": {
+        "name": "Modo viento HVAC"
+      },
+      "hvac_wind_position": {
+        "name": "Posición viento HVAC"
+      },
+      "hvac_ac_mode": {
+        "name": "Modo A/C"
+      },
+      "front_defrost_status": {
+        "name": "Desempañador delantero"
+      },
+      "electric_defrost_status": {
+        "name": "Desempañador eléctrico"
+      },
+      "wiper_heat_status": {
+        "name": "Calefacción limpia"
+      },
+      "rapid_increase_temp": {
+        "name": "Subida rápida temp"
+      },
+      "rapid_decrease_temp": {
+        "name": "Bajada rápida temp"
+      },
+      "left_front_window_pct": {
+        "name": "Apertura ventana conductor"
+      },
+      "right_front_window_pct": {
+        "name": "Apertura ventana acompañante"
+      },
+      "left_rear_window_pct": {
+        "name": "Apertura ventana trasera izda"
+      },
+      "right_rear_window_pct": {
+        "name": "Apertura ventana trasera dcha"
+      },
+      "charge_remaining_time": {
+        "name": "Tiempo restante de carga"
+      },
+      "energy_auto_model_graph_today": {
+        "name": "Consumo medio del modelo (hoy)"
+      },
+      "energy_cumulative_total_mileage": {
+        "name": "Kilometraje total acumulado"
+      },
+      "energy_last_50km_air_distribution": {
+        "name": "Últimos 50 km — climatización"
+      },
+      "energy_last_50km_drive_distribution": {
+        "name": "Últimos 50 km — conducción"
+      },
+      "energy_last_50km_elect_distribution": {
+        "name": "Últimos 50 km — eléctrico"
+      },
+      "energy_last_50km_ev_consumption": {
+        "name": "Consumo EV últimos 50 km"
+      },
+      "energy_last_50km_oil_consumption": {
+        "name": "Consumo combustible últimos 50 km"
+      },
+      "energy_last_50km_other_distribution": {
+        "name": "Últimos 50 km — otros"
+      },
+      "energy_self_graph_today": {
+        "name": "Consumo de energía (hoy)"
+      },
+      "last_50km_avg_eq_consumption": {
+        "name": "Consumo equivalente últimos 50 km"
+      },
+      "last_50km_avg_ev_consumption": {
+        "name": "Consumo medio EV últimos 50 km"
+      },
+      "last_50km_avg_fuel_consumption": {
+        "name": "Consumo medio combustible últimos 50 km"
+      },
+      "lifetime_avg_ev_consumption": {
+        "name": "Consumo medio EV vida útil"
+      },
+      "lifetime_avg_fuel_consumption": {
+        "name": "Consumo medio combustible vida útil"
+      },
+      "scheduled_charge_end_time": {
+        "name": "Hora fin de carga programada"
+      },
+      "scheduled_charge_repeat": {
+        "name": "Repetir carga programada"
+      },
+      "scheduled_charge_start_time": {
+        "name": "Hora inicio de carga programada"
+      },
+      "skylight": {
+        "name": "Cortinilla del techo"
+      },
+      "monthly_charged_bat_sl7": {
+        "name": "Carga total este mes"
+      },
+      "odometer_smoothed": {
+        "name": "Odómetro suavizado (ABRP)"
       }
     },
     "binary_sensor": {
@@ -259,7 +358,7 @@
         "name": "Ventana trasera derecha"
       },
       "skylight": {
-        "name": "Techo solar"
+        "name": "Cortinilla del techo"
       },
       "battery_heat_state": {
         "name": "Calefacción por batería"
@@ -329,6 +428,12 @@
       },
       "less_one_min": {
         "name": "Less one min"
+      },
+      "scheduled_charge_enabled": {
+        "name": "Carga programada activada"
+      },
+      "scheduled_charge_until_full": {
+        "name": "Cargar al 100%"
       }
     },
     "button": {
@@ -339,10 +444,19 @@
         "name": "Encontrar auto"
       },
       "close_windows": {
-        "name": "Cerrar ventanas"
+        "name": "Cerrar ventanas + cortinilla"
       },
       "force_poll": {
         "name": "Forzar consulta"
+      },
+      "fetch_energy": {
+        "name": "Actualizar datos de energía"
+      },
+      "start_charging": {
+        "name": "Iniciar carga"
+      },
+      "stop_charging": {
+        "name": "Parar carga"
       }
     },
     "select": {
@@ -423,6 +537,18 @@
       },
       "disable_polling": {
         "name": "Desactivar consulta"
+      },
+      "charge_to_full": {
+        "name": "Cargar al 100%"
+      },
+      "repeat_daily": {
+        "name": "Repetir diariamente"
+      },
+      "schedule_enabled": {
+        "name": "Carga programada activa"
+      },
+      "a_c_on": {
+        "name": "Arranque remoto (climate)"
       }
     },
     "climate": {
@@ -446,6 +572,22 @@
     "device_tracker": {
       "location": {
         "name": "Ubicación"
+      }
+    },
+    "number": {
+      "gps_poll_interval": {
+        "name": "Intervalo de sondeo GPS"
+      },
+      "realtime_poll_interval": {
+        "name": "Intervalo de sondeo telemetría"
+      }
+    },
+    "time": {
+      "end_time": {
+        "name": "Hora fin"
+      },
+      "start_time": {
+        "name": "Hora inicio"
       }
     }
   },

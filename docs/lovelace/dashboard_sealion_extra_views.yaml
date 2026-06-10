@@ -1,0 +1,505 @@
+###############################################################################
+# Vistas adicionales para el dashboard BYD Sealion 7
+#
+# Cómo usarlo:
+#   Abre tu dashboard → ⋮ → Edit dashboard → ⋮ → Raw configuration editor.
+#   Tu Home actual empieza con:
+#       views:
+#         - title: Home
+#           sections: ...
+#   Pega TODO el contenido de este archivo justo después de tu vista Home,
+#   manteniendo la indentación (las vistas son items de la lista `views:`).
+#
+# Cards custom necesarios (HACS → Frontend):
+#   - piitaya/lovelace-mushroom   (botones de control, chips, plantillas)
+#   - kalkih/mini-graph-card      (gráficos de batería, potencia, neumáticos)
+###############################################################################
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # CONTROLES
+  # ─────────────────────────────────────────────────────────────────────────
+  - title: Controles
+    path: controles
+    icon: mdi:remote
+    type: sections
+    max_columns: 2
+    sections:
+
+      - type: grid
+        cards:
+          - type: heading
+            heading: Acciones rápidas
+            icon: mdi:car-cog
+          - type: grid
+            columns: 3
+            square: false
+            cards:
+              - type: custom:mushroom-template-card
+                primary: Buscar
+                secondary: ""
+                icon: mdi:car-search
+                icon_color: blue
+                fill_container: true
+                tap_action:
+                  action: call-service
+                  service: button.press
+                  target: { entity_id: button.byd_sealion_7_find_car }
+              - type: custom:mushroom-template-card
+                primary: Luces
+                secondary: ""
+                icon: mdi:car-light-high
+                icon_color: amber
+                fill_container: true
+                tap_action:
+                  action: call-service
+                  service: button.press
+                  target: { entity_id: button.byd_sealion_7_flash_lights }
+              - type: custom:mushroom-template-card
+                primary: Cerrar ventanas
+                secondary: ""
+                icon: mdi:window-closed
+                icon_color: grey
+                fill_container: true
+                tap_action:
+                  action: call-service
+                  service: button.press
+                  target: { entity_id: button.byd_sealion_7_close_windows }
+              - type: custom:mushroom-template-card
+                primary: Abrir maletero
+                secondary: ""
+                icon: mdi:car-back
+                icon_color: indigo
+                fill_container: true
+                tap_action:
+                  action: call-service
+                  service: button.press
+                  target: { entity_id: button.byd_sealion_7_open_trunk }
+                  confirmation:
+                    text: "¿Abrir el maletero?"
+              - type: custom:mushroom-template-card
+                primary: Cerrar maletero
+                secondary: ""
+                icon: mdi:car-back
+                icon_color: indigo
+                fill_container: true
+                tap_action:
+                  action: call-service
+                  service: button.press
+                  target: { entity_id: button.byd_sealion_7_close_trunk }
+                  confirmation:
+                    text: "¿Cerrar el maletero?"
+              - type: custom:mushroom-lock-card
+                entity: lock.byd_sealion_7_lock
+                name: Cerradura
+                fill_container: true
+              - type: custom:mushroom-template-card
+                primary: One-tap prep
+                secondary: testing
+                icon: mdi:car-cog
+                icon_color: purple
+                fill_container: true
+                tap_action:
+                  action: call-service
+                  service: button.press
+                  target: { entity_id: button.byd_sealion_7_one_tap_prep }
+                  confirmation:
+                    text: "Activar pre-condicionamiento one-tap? (testing — payload sin verificar)"
+              - type: custom:mushroom-template-card
+                primary: One-tap off
+                secondary: testing
+                icon: mdi:power
+                icon_color: red
+                fill_container: true
+                tap_action:
+                  action: call-service
+                  service: button.press
+                  target: { entity_id: button.byd_sealion_7_one_tap_shutdown }
+                  confirmation:
+                    text: "Apagar todo (one-tap shutdown)? (testing — payload sin verificar)"
+              - type: custom:mushroom-template-card
+                primary: Iniciar carga
+                secondary: ""
+                icon: mdi:play-circle
+                icon_color: green
+                fill_container: true
+                tap_action:
+                  action: call-service
+                  service: button.press
+                  target: { entity_id: button.byd_sealion_7_start_charging }
+
+      - type: grid
+        cards:
+          - type: heading
+            heading: Climate
+            icon: mdi:air-conditioner
+          - type: thermostat
+            entity: climate.byd_sealion_7_climate
+          - type: custom:mushroom-chips-card
+            alignment: center
+            chips:
+              - type: entity
+                entity: switch.byd_sealion_7_a_c_on
+                icon: mdi:air-conditioner
+                tap_action: { action: toggle }
+              - type: entity
+                entity: switch.byd_sealion_7_steering_wheel_heating
+                icon: mdi:steering
+                tap_action: { action: toggle }
+              - type: entity
+                entity: sensor.byd_sealion_7_cabin_temperature
+                icon: mdi:home-thermometer
+              - type: entity
+                entity: sensor.byd_sealion_7_exterior_temperature
+                icon: mdi:thermometer
+              - type: entity
+                entity: sensor.byd_sealion_7_pm2_5
+                icon: mdi:air-filter
+          - type: entities
+            title: Asientos
+            entities:
+              - entity: select.byd_sealion_7_driver_seat_heating
+                name: Conductor — calefacción
+              - entity: select.byd_sealion_7_driver_seat_ventilation
+                name: Conductor — ventilación
+              - entity: select.byd_sealion_7_passenger_seat_heating
+                name: Acompañante — calefacción
+              - entity: select.byd_sealion_7_passenger_seat_ventilation
+                name: Acompañante — ventilación
+              - entity: select.byd_sealion_7_rear_left_seat_heating
+                name: Trasero izq — calefacción
+              - entity: select.byd_sealion_7_rear_right_seat_heating
+                name: Trasero der — calefacción
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # ESTADO
+  # ─────────────────────────────────────────────────────────────────────────
+  - title: Estado
+    path: estado
+    icon: mdi:car-door
+    type: sections
+    max_columns: 3
+    sections:
+
+      - type: grid
+        cards:
+          - type: heading
+            heading: Puertas
+            icon: mdi:car-door
+          - type: custom:mushroom-template-card
+            primary: Delantera izquierda
+            icon: mdi:car-door
+            entity: binary_sensor.byd_sealion_7_front_left_door
+            icon_color: "{{ 'red' if is_state('binary_sensor.byd_sealion_7_front_left_door','on') else 'grey' }}"
+            secondary: "{{ 'abierta' if is_state('binary_sensor.byd_sealion_7_front_left_door','on') else 'cerrada' }} · {{ 'sin pestillo' if is_state('binary_sensor.byd_sealion_7_front_left_door_lock','on') else 'cerrada con llave' }}"
+          - type: custom:mushroom-template-card
+            primary: Delantera derecha
+            icon: mdi:car-door
+            entity: binary_sensor.byd_sealion_7_front_right_door
+            icon_color: "{{ 'red' if is_state('binary_sensor.byd_sealion_7_front_right_door','on') else 'grey' }}"
+            secondary: "{{ 'abierta' if is_state('binary_sensor.byd_sealion_7_front_right_door','on') else 'cerrada' }} · {{ 'sin pestillo' if is_state('binary_sensor.byd_sealion_7_front_right_door_lock','on') else 'cerrada con llave' }}"
+          - type: custom:mushroom-template-card
+            primary: Trasera izquierda
+            icon: mdi:car-door
+            entity: binary_sensor.byd_sealion_7_rear_left_door
+            icon_color: "{{ 'red' if is_state('binary_sensor.byd_sealion_7_rear_left_door','on') else 'grey' }}"
+            secondary: "{{ 'abierta' if is_state('binary_sensor.byd_sealion_7_rear_left_door','on') else 'cerrada' }} · {{ 'sin pestillo' if is_state('binary_sensor.byd_sealion_7_rear_left_door_lock','on') else 'cerrada con llave' }}"
+          - type: custom:mushroom-template-card
+            primary: Trasera derecha
+            icon: mdi:car-door
+            entity: binary_sensor.byd_sealion_7_rear_right_door
+            icon_color: "{{ 'red' if is_state('binary_sensor.byd_sealion_7_rear_right_door','on') else 'grey' }}"
+            secondary: "{{ 'abierta' if is_state('binary_sensor.byd_sealion_7_rear_right_door','on') else 'cerrada' }} · {{ 'sin pestillo' if is_state('binary_sensor.byd_sealion_7_rear_right_door_lock','on') else 'cerrada con llave' }}"
+          - type: custom:mushroom-template-card
+            primary: Maletero
+            icon: mdi:car-back
+            entity: binary_sensor.byd_sealion_7_trunk
+            icon_color: "{{ 'red' if is_state('binary_sensor.byd_sealion_7_trunk','on') else 'grey' }}"
+          - type: custom:mushroom-template-card
+            primary: Capó
+            icon: mdi:car-back
+            entity: binary_sensor.byd_sealion_7_frunk
+            icon_color: "{{ 'red' if is_state('binary_sensor.byd_sealion_7_frunk','on') else 'grey' }}"
+
+      - type: grid
+        cards:
+          - type: heading
+            heading: Ventanas
+            icon: mdi:car-door
+          - type: custom:mushroom-template-card
+            primary: Del. izq.
+            entity: binary_sensor.byd_sealion_7_front_left_window
+            icon: mdi:car-door
+            icon_color: "{{ 'red' if is_state('binary_sensor.byd_sealion_7_front_left_window','on') else 'grey' }}"
+          - type: custom:mushroom-template-card
+            primary: Del. der.
+            entity: binary_sensor.byd_sealion_7_front_right_window
+            icon: mdi:car-door
+            icon_color: "{{ 'red' if is_state('binary_sensor.byd_sealion_7_front_right_window','on') else 'grey' }}"
+          - type: custom:mushroom-template-card
+            primary: Tras. izq.
+            entity: binary_sensor.byd_sealion_7_rear_left_window
+            icon: mdi:car-door
+            icon_color: "{{ 'red' if is_state('binary_sensor.byd_sealion_7_rear_left_window','on') else 'grey' }}"
+          - type: custom:mushroom-template-card
+            primary: Tras. der.
+            entity: binary_sensor.byd_sealion_7_rear_right_window
+            icon: mdi:car-door
+            icon_color: "{{ 'red' if is_state('binary_sensor.byd_sealion_7_rear_right_window','on') else 'grey' }}"
+          - type: custom:mushroom-template-card
+            primary: Techo
+            entity: binary_sensor.byd_sealion_7_skylight
+            icon: mdi:car-convertible
+            icon_color: "{{ 'red' if is_state('binary_sensor.byd_sealion_7_skylight','on') else 'grey' }}"
+
+      - type: grid
+        cards:
+          - type: heading
+            heading: Neumáticos
+            icon: mdi:tire
+          - type: custom:mini-graph-card
+            name: Delantera izq.
+            entities: [sensor.byd_sealion_7_front_left_tire_pressure]
+            hours_to_show: 72
+            line_width: 2
+          - type: custom:mini-graph-card
+            name: Delantera der.
+            entities: [sensor.byd_sealion_7_front_right_tire_pressure]
+            hours_to_show: 72
+            line_width: 2
+          - type: custom:mini-graph-card
+            name: Trasera izq.
+            entities: [sensor.byd_sealion_7_rear_left_tire_pressure]
+            hours_to_show: 72
+            line_width: 2
+          - type: custom:mini-graph-card
+            name: Trasera der.
+            entities: [sensor.byd_sealion_7_rear_right_tire_pressure]
+            hours_to_show: 72
+            line_width: 2
+          - type: entities
+            entities:
+              - entity: binary_sensor.byd_sealion_7_tpms_state
+                name: TPMS
+              - entity: binary_sensor.byd_sealion_7_rapid_tire_leak
+                name: Fuga rápida
+              - entity: binary_sensor.byd_sealion_7_front_left_tire_status
+                name: Estado DI
+              - entity: binary_sensor.byd_sealion_7_front_right_tire_status
+                name: Estado DD
+              - entity: binary_sensor.byd_sealion_7_rear_left_tire_status
+                name: Estado TI
+              - entity: binary_sensor.byd_sealion_7_rear_right_tire_status
+                name: Estado TD
+
+      - type: grid
+        column_span: 3
+        cards:
+          - type: heading
+            heading: Avisos del coche
+            icon: mdi:alert
+          - type: entities
+            show_header_toggle: false
+            entities:
+              - binary_sensor.byd_sealion_7_abs_warning
+              - binary_sensor.byd_sealion_7_airbag_warning
+              - binary_sensor.byd_sealion_7_braking_system
+              - binary_sensor.byd_sealion_7_charging_system
+              - binary_sensor.byd_sealion_7_coolant_temperature_warning
+              - binary_sensor.byd_sealion_7_electric_power_steering
+              - binary_sensor.byd_sealion_7_electronic_stability
+              - binary_sensor.byd_sealion_7_power_system
+              - binary_sensor.byd_sealion_7_service_vehicle_soon
+              - binary_sensor.byd_sealion_7_steering_system
+              - sensor.byd_sealion_7_power_warning
+              - sensor.byd_sealion_7_ok_light
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # CARGA BYD (datos del coche, complementa la Home que ya tienes con V2C)
+  # ─────────────────────────────────────────────────────────────────────────
+  - title: Carga
+    path: carga
+    icon: mdi:ev-station
+    type: sections
+    max_columns: 2
+    sections:
+
+      - type: grid
+        cards:
+          - type: heading
+            heading: Sesión actual
+            icon: mdi:battery-charging
+          - type: custom:mushroom-template-card
+            primary: "{{ states('sensor.byd_sealion_7_battery_level') }} %"
+            secondary: >-
+              {% set p = states('sensor.byd_sealion_7_power') | float(0) %}
+              {% if p > 0 %}+{{ p }} kW · {% endif %}
+              {{ states('sensor.byd_sealion_7_range') }} km autonomía
+            icon: mdi:battery-charging
+            icon_color: >-
+              {% set b = states('sensor.byd_sealion_7_battery_level') | float(0) %}
+              {% if b < 20 %}red{% elif b < 50 %}orange{% else %}green{% endif %}
+            badge_icon: >-
+              {% if is_state('binary_sensor.byd_sealion_7_charging','on') %}mdi:lightning-bolt{% endif %}
+            badge_color: amber
+            fill_container: true
+            multiline_secondary: true
+          - type: entities
+            state_color: true
+            entities:
+              - entity: sensor.byd_sealion_7_charging_state
+                name: Estado
+              - entity: sensor.byd_sealion_7_charge_session_phase
+                name: Fase
+              - entity: sensor.byd_sealion_7_charge_session_started_at
+                name: Inicio sesión
+              - entity: sensor.byd_sealion_7_minutes_to_full
+                name: Minutos a 100%
+              - entity: sensor.byd_sealion_7_hours_to_full
+                name: Horas a 100%
+              - entity: sensor.byd_sealion_7_charge_remaining_time
+                name: Tiempo restante
+              - entity: sensor.byd_sealion_7_charge_wait_status
+                name: Wait status
+              - entity: binary_sensor.byd_sealion_7_plug
+                name: Enchufado
+              - entity: binary_sensor.byd_sealion_7_battery_heating
+                name: Calentando batería
+
+      - type: grid
+        cards:
+          - type: heading
+            heading: Programada
+            icon: mdi:calendar-clock
+          - type: entities
+            entities:
+              - entity: binary_sensor.byd_sealion_7_scheduled_charge_enabled
+                name: Activa
+              - entity: sensor.byd_sealion_7_scheduled_charge_start_time
+                name: Empieza
+              - entity: sensor.byd_sealion_7_scheduled_charge_end_time
+                name: Termina
+              - entity: sensor.byd_sealion_7_scheduled_charge_repeat
+                name: Repetir
+              - entity: binary_sensor.byd_sealion_7_scheduled_charge_until_full
+                name: Hasta 100%
+
+      - type: grid
+        column_span: 2
+        cards:
+          - type: heading
+            heading: Histórico
+            icon: mdi:chart-line
+          - type: custom:mini-graph-card
+            name: Batería (48 h)
+            entities: [sensor.byd_sealion_7_battery_level]
+            hours_to_show: 48
+            points_per_hour: 1
+            line_width: 3
+            show: { labels: true, extrema: true, fill: fade }
+            color_thresholds:
+              - { value: 20, color: "#ef5350" }
+              - { value: 50, color: "#ffa726" }
+              - { value: 80, color: "#66bb6a" }
+          - type: custom:mini-graph-card
+            name: Potencia (24 h)
+            entities:
+              - entity: sensor.byd_sealion_7_power
+                color: var(--accent-color)
+            hours_to_show: 24
+            points_per_hour: 4
+            line_width: 2
+            show: { labels: true, extrema: true, fill: fade }
+          - type: glance
+            title: Consumos
+            entities:
+              - entity: sensor.byd_sealion_7_today_s_energy_consumption
+                name: Hoy
+              - entity: sensor.byd_sealion_7_recent_energy_consumption
+                name: Reciente
+              - entity: sensor.byd_sealion_7_recent_50km_energy
+                name: 50 km
+              - entity: sensor.byd_sealion_7_last_50km_average_ev_consumption
+                name: Media 50 km
+              - entity: sensor.byd_sealion_7_lifetime_average_ev_consumption
+                name: Vida útil
+              - entity: sensor.byd_sealion_7_total_consumption
+                name: Total
+              - entity: sensor.byd_sealion_7_monthly_charged_bat_sl7
+                name: Mes cargado
+              - entity: sensor.byd_sealion_7_real_bat_charged_sl7
+                name: Real cargado
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # DIAGNÓSTICO
+  # ─────────────────────────────────────────────────────────────────────────
+  - title: Diagnóstico
+    path: diagnostico
+    icon: mdi:stethoscope
+    type: sections
+    max_columns: 2
+    sections:
+
+      - type: grid
+        cards:
+          - type: heading
+            heading: Pool & conexión
+            icon: mdi:cloud-sync
+          - type: entities
+            state_color: true
+            entities:
+              - entity: binary_sensor.byd_sealion_7_online
+                name: Online
+              - entity: binary_sensor.byd_sealion_7_connectivity
+                name: Conectividad
+              - entity: sensor.byd_sealion_7_effective_poll_interval
+                name: Effective poll
+              - entity: number.byd_sealion_7_realtime_poll_interval
+                name: Base poll (realtime)
+              - entity: number.byd_sealion_7_gps_poll_interval
+                name: Base poll (GPS)
+              - entity: switch.byd_sealion_7_disable_polling
+                name: Pausar polling
+              - entity: sensor.byd_sealion_7_last_mqtt_push_at
+                name: Last MQTT push
+              - entity: sensor.byd_sealion_7_telemetry_last_updated
+                name: Telemetría actualizada
+              - entity: sensor.byd_sealion_7_gps_last_updated
+                name: GPS actualizado
+              - entity: button.byd_sealion_7_force_poll
+                name: Force poll now
+              - entity: button.byd_sealion_7_fetch_energy_data
+                name: Fetch energy now
+
+      - type: grid
+        cards:
+          - type: heading
+            heading: Firmware & OTA
+            icon: mdi:chip
+          - type: entities
+            entities:
+              - entity: sensor.byd_sealion_7_t_box_version
+                name: T-Box
+              - entity: sensor.byd_sealion_7_ota_upgrade_status
+                name: OTA status
+              - entity: binary_sensor.byd_sealion_7_ota_upgrade_status
+                name: OTA disponible
+              - entity: update.byd_vehicle_update
+                name: Integración
+              - entity: update.byd_vehicle_update_2
+                name: Integración (2)
+
+      - type: grid
+        column_span: 2
+        cards:
+          - type: heading
+            heading: Otros sensores
+            icon: mdi:format-list-bulleted
+          - type: entities
+            entities:
+              - sensor.byd_sealion_7_engine_status
+              - sensor.byd_sealion_7_power_battery_level
+              - binary_sensor.byd_sealion_7_sentry_mode
+              - binary_sensor.byd_sealion_7_less_one_min
+              - sensor.byd_sealion_7_today_s_model_average_consumption
+              - sensor.byd_sealion_7_total_consumption_en
+              - sensor.byd_sealion_7_last_50km_ev_consumption

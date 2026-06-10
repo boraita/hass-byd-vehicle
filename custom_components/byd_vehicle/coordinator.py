@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+import inspect
 import json
 import logging
 from datetime import UTC, datetime, timedelta
@@ -28,6 +30,7 @@ from pybyd import (
     BydEndpointNotSupportedError,
     BydRateLimitError,
     BydRemoteControlError,
+    BydServiceBusyError,
     BydSessionExpiredError,
     BydTransportError,
     CommandAckEvent,
@@ -53,7 +56,15 @@ from .const import (
 _LOGGER = logging.getLogger(__name__)
 
 _HA_EVENT_COMMAND_LIFECYCLE: str = f"{DOMAIN}_command_lifecycle"
+# Fired on every MQTT push (event-bus hook so automations can react without
+# polling).  Payload: {vin, event, summary}.
+_HA_EVENT_PUSH: str = f"{DOMAIN}_push"
+# Fired when the vehicle's on/off (power) state transitions.
+# Payload: {vin, is_on, state, timestamp, trip_start|trip}.
 _HA_EVENT_POWER_CHANGED: str = f"{DOMAIN}_power_changed"
+# Fired when the MQTT push channel (re)connects to the BYD cloud.
+# Payload: {vin}.  The "service is back up" signal.
+_HA_EVENT_CLOUD_ONLINE: str = f"{DOMAIN}_cloud_online"
 
 # Trip snapshots persist across HA restarts so a restart mid-trip does
 # not lose the power-on baseline (SoC/odometer at trip start).
@@ -71,6 +82,31 @@ _RECOVERABLE_ERRORS = (
     BydRateLimitError,
     BydEndpointNotSupportedError,
 )
+
+# Per-event whitelist of fields safe to include in the MQTT diagnostic
+# samples surfaced through ``sensor.byd_*_mqtt_event_log``.  Anything not
+# listed here is dropped — keeps personal data (location, VIN tail, etc.)
+# out of the sensor history while still giving enough signal to diagnose
+# command results and state-machine transitions.
+_MQTT_SAMPLE_FIELDS: dict[str, tuple[str, ...]] = {
+    "remoteControl": ("res", "requestSerial"),
+    "vehicleInfo": (
+        "chargingState",
+        "chargeState",
+        "connectState",
+        "elecPercent",
+        "vehicleState",
+        "onlineState",
+    ),
+}
+
+
+def _extract_mqtt_sample_fields(event: str, data: Any) -> dict[str, Any]:
+    """Pick the whitelisted summary fields for an MQTT event payload."""
+    allowed = _MQTT_SAMPLE_FIELDS.get(event)
+    if not allowed or not isinstance(data, dict):
+        return {}
+    return {key: data[key] for key in allowed if key in data}
 
 
 class BydApi:
@@ -112,6 +148,8 @@ class BydApi:
         self._debug_dump_dir = Path(hass.config.path(".storage/byd_vehicle_debug"))
         self._coordinators: dict[str, BydDataUpdateCoordinator] = {}
         self._gps_coordinators: dict[str, BydGpsUpdateCoordinator] = {}
+        self._mqtt_event_counters: dict[str, int] = {}
+        self._mqtt_event_samples: list[dict[str, Any]] = []
         _LOGGER.debug(
             "BYD API initialized: entry_id=%s, region=%s, language=%s",
             entry.entry_id,
@@ -153,7 +191,36 @@ class BydApi:
     def _handle_mqtt_event(
         self, event: str, vin: str, respond_data: dict[str, Any]
     ) -> None:
-        """Handle generic MQTT events from pyBYD."""
+        """Handle generic MQTT events from pyBYD.
+
+        Captures per-event counters plus a rolling window of lightweight
+        samples (timestamp, event name, key list, and a whitelisted value
+        summary) for the diagnostic ``mqtt_event_log`` sensor.  Full payloads
+        only land on disk when debug dumps are enabled.
+        """
+        self._mqtt_event_counters[event] = self._mqtt_event_counters.get(event, 0) + 1
+        keys = sorted(respond_data.keys()) if isinstance(respond_data, dict) else []
+        self._mqtt_event_samples.append(
+            {
+                "t": datetime.now(tz=UTC).isoformat(),
+                "event": event,
+                "vin": vin[-6:] if vin else "-",
+                "keys": keys[:20],
+                "summary": _extract_mqtt_sample_fields(event, respond_data),
+            }
+        )
+        if len(self._mqtt_event_samples) > 50:
+            self._mqtt_event_samples = self._mqtt_event_samples[-50:]
+        # Event-bus hook: let automations react to any push instantly,
+        # without polling the car.
+        self._hass.bus.async_fire(
+            _HA_EVENT_PUSH,
+            {
+                "vin": vin,
+                "event": event,
+                "summary": _extract_mqtt_sample_fields(event, respond_data),
+            },
+        )
         if self._debug_dumps_enabled:
             dump: dict[str, Any] = {
                 "vin": vin,
@@ -163,6 +230,30 @@ class BydApi:
             self._hass.async_create_task(
                 self._async_write_debug_dump(f"mqtt_{event}", dump)
             )
+
+    def _handle_mqtt_connect(self) -> None:
+        """Handle an MQTT (re)connect from pyBYD — the 'cloud back up' signal.
+
+        Fired when the push channel connects/reconnects to the BYD cloud
+        (e.g. after a maintenance outage).  Surfaced as an event-bus event
+        so automations can react to the service returning.
+        """
+        self._hass.bus.async_fire(
+            _HA_EVENT_CLOUD_ONLINE, {"entry_id": self._entry.entry_id}
+        )
+        _LOGGER.debug(
+            "MQTT (re)connected — cloud online: entry=%s", self._entry.entry_id
+        )
+
+    @property
+    def mqtt_event_counters(self) -> dict[str, int]:
+        """Per-event MQTT push counts since HA start."""
+        return dict(self._mqtt_event_counters)
+
+    @property
+    def mqtt_event_samples(self) -> list[dict[str, Any]]:
+        """Last 50 MQTT events received (timestamp + event_type + key list)."""
+        return list(self._mqtt_event_samples)
 
     def _handle_command_ack(self, ack: CommandAckEvent) -> None:
         """Process a structured command ACK from pyBYD (diagnostics)."""
@@ -289,13 +380,17 @@ class BydApi:
                 "Creating new pyBYD client: entry_id=%s",
                 self._entry.entry_id,
             )
-            self._client = BydClient(
-                self._config,
-                session=self._http_session,
-                on_mqtt_event=self._handle_mqtt_event,
-                on_command_ack=self._handle_command_ack,
-                on_command_lifecycle=self._handle_command_lifecycle,
-            )
+            client_kwargs: dict[str, Any] = {
+                "session": self._http_session,
+                "on_mqtt_event": self._handle_mqtt_event,
+                "on_command_ack": self._handle_command_ack,
+                "on_command_lifecycle": self._handle_command_lifecycle,
+            }
+            # Wire the MQTT (re)connect callback only when the installed
+            # pybyd supports it, so an older pinned pybyd does not break setup.
+            if "on_mqtt_connect" in inspect.signature(BydClient).parameters:
+                client_kwargs["on_mqtt_connect"] = self._handle_mqtt_connect
+            self._client = BydClient(self._config, **client_kwargs)
             await self._client.async_start()
 
             # Re-verify command access after client recreation.
@@ -463,7 +558,7 @@ class BydDataUpdateCoordinator(DataUpdateCoordinator[VehicleSnapshot]):
     # Override parent annotations: ``data`` is None until first refresh,
     # and we assign ``update_interval = None`` to pause polling (HA
     # accepts None at runtime; the stub doesn't mark it Optional).
-    data: VehicleSnapshot | None  # type: ignore[assignment]
+    data: VehicleSnapshot | None
     update_interval: timedelta | None
 
     def __init__(
@@ -491,9 +586,29 @@ class BydDataUpdateCoordinator(DataUpdateCoordinator[VehicleSnapshot]):
         self._energy_supported: bool | None = None
         self._charge_session_started_at: datetime | None = None
         self._charge_session_start_soc: float | None = None
+        # When charging transitions ON → OFF mid-session, record the
+        # moment.  ``_track_charge_session`` then waits the coalesce
+        # window before actually closing the session — micro-pauses
+        # during AC slow charge (BYD reports chargingState oscillating
+        # ON/OFF every ~30s while the car deep-sleeps mid-charge) no
+        # longer break a single physical session into many counted ones.
+        self._charging_off_since: datetime | None = None
+        self._charge_curve: list[dict[str, Any]] = []
+        self._charge_sessions: list[dict[str, Any]] = []
         self._last_mqtt_push_at: datetime | None = None
         self._last_successful_fetch_at: datetime | None = None
+        # Diagnostic for the manual Fetch energy button — captures
+        # when the button last fired and what BYD answered (ok /
+        # unsupported / error).  Useful because the EnergyConsumption
+        # sensors don't always change visibly (cloud returns same
+        # payload or rejects with code=1001), so without an explicit
+        # attempt timestamp the button looks broken.
+        self._last_energy_fetch_at: datetime | None = None
+        self._last_energy_fetch_status: str | None = None
         self._consecutive_fetch_failures: int = 0
+        # Streak of consecutive service-busy (1008) realtime failures; drives
+        # the adaptive backoff so we stop hammering an overloaded backend.
+        self._service_busy_streak: int = 0
         # Hardening: track whether we've ever received a non-sentinel realtime
         # payload.  Used to (a) skip adaptive backoff during the first 5 min
         # after startup so we hammer the cloud until the car responds, and
@@ -509,6 +624,9 @@ class BydDataUpdateCoordinator(DataUpdateCoordinator[VehicleSnapshot]):
         # the rest of the energy entities working.
         self._energy_distribution_supported: bool | None = None
         self._cancel_hvac_final_retry: CALLBACK_TYPE | None = None
+        self.update_pending: bool = False
+        self._debounce_timer: CALLBACK_TYPE | None = None
+        self._pending_schedule_updates: dict[str, Any] = {}
         # Trip tracking: snapshot taken when the car powers ON, persisted
         # so deltas (distance, SoC used) survive HA restarts mid-trip.
         self._trip_store: Store[dict[str, Any]] = Store(
@@ -695,15 +813,95 @@ class BydDataUpdateCoordinator(DataUpdateCoordinator[VehicleSnapshot]):
         (plug-in, key fob press, etc.) when waiting for the next scheduled
         poll would be too slow.  Caller should await this and then read
         the freshly-updated entity states.
+
+        Wake-aware: if the first realtime fetch comes back offline/stale
+        (a sleeping T-Box makes the cloud return its last cached snapshot),
+        send a benign flash-lights wake and retry the fetch once the car
+        reports online — so a single press genuinely refreshes a sleeping
+        car instead of silently returning hours-old data.  When the car has
+        no cell coverage the wake is rejected (code 6002) and we keep the
+        last-known snapshot; that is a connectivity limit, not something
+        polling can fix.
         """
         try:
             await self.async_fetch_realtime()
         except Exception as exc:  # noqa: BLE001
             _LOGGER.warning("force_poll: realtime failed vin=%s err=%s", self._vin, exc)
+
+        if self._should_wake_for_force_poll():
+            await self._wake_and_refetch()
+
         try:
             await self.async_fetch_charging()
         except Exception as exc:  # noqa: BLE001
             _LOGGER.warning("force_poll: charging failed vin=%s err=%s", self._vin, exc)
+
+    def _should_wake_for_force_poll(self) -> bool:
+        """Whether a force-poll should attempt a flash-lights wake.
+
+        True only when the car supports flash-lights *and* the current
+        snapshot looks like the "sleeping car" sentinel (offline / stale),
+        so an already-awake car never triggers a needless light flash.
+        """
+        car = self._car
+        if car is None:
+            return False
+        finder = getattr(car, "finder", None)
+        if finder is None or not getattr(finder, "flash_available", False):
+            return False
+        return self._is_sentinel_payload(getattr(car, "state", None))
+
+    async def _wake_and_refetch(self) -> None:
+        """Send a benign wake (flash lights) then re-fetch until online.
+
+        Polls realtime for up to ~60 s after the wake.  Swallows a rejected
+        wake (code 6002 = weak signal around the vehicle): an unreachable
+        T-Box cannot be woken remotely, so we keep the last-known snapshot
+        rather than spin.
+        """
+        car = self._car
+        if car is None:
+            return
+        wake_timeout = 60.0
+        wake_interval = 8.0
+        _LOGGER.info(
+            "force_poll: car looks offline; sending flash-lights wake vin=%s",
+            self._vin[-6:],
+        )
+        try:
+            await car.finder.flash_lights()
+        except Exception as exc:  # noqa: BLE001
+            _LOGGER.info(
+                "force_poll: wake not delivered (car unreachable?) vin=%s err=%s",
+                self._vin[-6:],
+                exc,
+            )
+            return
+        elapsed = 0.0
+        while elapsed < wake_timeout:
+            await asyncio.sleep(wake_interval)
+            elapsed += wake_interval
+            try:
+                await self.async_fetch_realtime()
+            except Exception as exc:  # noqa: BLE001
+                _LOGGER.debug(
+                    "force_poll: post-wake fetch failed vin=%s err=%s",
+                    self._vin[-6:],
+                    exc,
+                )
+                continue
+            if not self._is_sentinel_payload(getattr(car, "state", None)):
+                _LOGGER.info(
+                    "force_poll: car woke; fresh data after %.0fs vin=%s",
+                    elapsed,
+                    self._vin[-6:],
+                )
+                return
+        _LOGGER.info(
+            "force_poll: car did not wake within %.0fs vin=%s",
+            wake_timeout,
+            self._vin[-6:],
+        )
 
     async def async_refresh_firmware_metadata(self) -> str | None:
         """Refresh ``vehicle.tbox_version`` from the cloud vehicle list.
@@ -823,6 +1021,15 @@ class BydDataUpdateCoordinator(DataUpdateCoordinator[VehicleSnapshot]):
         self._force_next_refresh = False
         previous_snapshot = self.data
 
+        if self.update_pending:
+            _LOGGER.debug(
+                "Skipping telemetry refresh due to pending schedule update: vin=%s",
+                self._vin[-6:],
+            )
+            if self.data is not None:
+                return self.data
+            return VehicleSnapshot(vehicle=self._vehicle)
+
         if not self._polling_enabled and not force:
             if self.data is not None:
                 return self.data
@@ -834,8 +1041,10 @@ class BydDataUpdateCoordinator(DataUpdateCoordinator[VehicleSnapshot]):
         car = self._car
 
         # --- Realtime ---
+        realtime_fetch_succeeded = False
         try:
             await car.update_realtime()
+            realtime_fetch_succeeded = True
         except _AUTH_ERRORS:
             raise
         except BydEndpointNotSupportedError:
@@ -848,11 +1057,19 @@ class BydDataUpdateCoordinator(DataUpdateCoordinator[VehicleSnapshot]):
                 self._realtime_endpoint_unsupported = True
         except _RECOVERABLE_ERRORS as exc:
             self._consecutive_fetch_failures += 1
+            # Track 1008 bursts specifically so the adaptive interval can back
+            # off; a non-busy recoverable error resets the busy streak.
+            if isinstance(exc, BydServiceBusyError):
+                self._service_busy_streak += 1
+            else:
+                self._service_busy_streak = 0
             _LOGGER.warning(
-                "Realtime fetch failed: vin=%s, error=%s, consecutive_failures=%d",
+                "Realtime fetch failed: vin=%s, error=%s, consecutive_failures=%d, "
+                "service_busy_streak=%d",
                 self._vin,
                 exc,
                 self._consecutive_fetch_failures,
+                self._service_busy_streak,
             )
 
         # --- HVAC (conditional) ---
@@ -871,6 +1088,18 @@ class BydDataUpdateCoordinator(DataUpdateCoordinator[VehicleSnapshot]):
             _LOGGER.debug(
                 "HVAC fetch skipped: vin=%s, reason=vehicle_not_on",
                 self._vin[-6:],
+            )
+
+        # --- Charging (Schedule & Live) ---
+        try:
+            await car.update_charging()
+        except _AUTH_ERRORS:
+            raise
+        except _RECOVERABLE_ERRORS as exc:
+            _LOGGER.warning(
+                "Charging fetch failed: vin=%s, error=%s",
+                self._vin,
+                exc,
             )
 
         snapshot = car.state
@@ -900,10 +1129,17 @@ class BydDataUpdateCoordinator(DataUpdateCoordinator[VehicleSnapshot]):
             snapshot.hvac is not None,
         )
 
-        # Health tracking: a real realtime payload counts as a success.
-        if snapshot.realtime is not None:
+        # Health tracking: only the realtime HTTP fetch actually succeeding
+        # this cycle counts as a success.  Looking at ``snapshot.realtime``
+        # alone is misleading — pyBYD keeps the last successful payload
+        # cached on the BydCar, so the snapshot stays populated across
+        # failures and the cloud_responsive sensor never flips even during
+        # a multi-hour outage (903 consecutive 1008/500 errors observed
+        # 2026-05-25 night without the connectivity binary_sensor noticing).
+        if realtime_fetch_succeeded:
             self._last_successful_fetch_at = datetime.now(tz=UTC)
             self._consecutive_fetch_failures = 0
+            self._service_busy_streak = 0
 
         # Mark the first non-sentinel payload — used by the adaptive
         # interval to know when to stop aggressive startup polling.
@@ -957,6 +1193,20 @@ class BydDataUpdateCoordinator(DataUpdateCoordinator[VehicleSnapshot]):
     # first 5 minutes so a deep-sleep car doesn't strand us on stale data.
     _STARTUP_AGGRESSIVE_WINDOW = timedelta(minutes=5)
 
+    # Below this instantaneous battery power (W), an active charge is
+    # considered "AC slow" — SOC rises ~1% every ~12 min, so a 1×
+    # cadence wastes calls.  Threshold sits between Schuko (~2.3 kW)
+    # and the smallest DC fast chargers (~25 kW).
+    _AC_SLOW_CHARGE_THRESHOLD_W = 5000.0
+
+    # Service-busy (1008) backoff: when the backend returns bursts of
+    # BydServiceBusyError, widen the poll interval instead of hammering.
+    # Backoff kicks in at the threshold and doubles per extra failure,
+    # capped, with a hard ceiling on the resulting interval.
+    _SERVICE_BUSY_BACKOFF_THRESHOLD = 3
+    _SERVICE_BUSY_BACKOFF_MAX_FACTOR = 8
+    _MAX_BACKOFF_INTERVAL = timedelta(minutes=30)
+
     def _is_sentinel_payload(self, snapshot: VehicleSnapshot | None) -> bool:
         """Whether the realtime payload looks like a "sleeping car" sentinel.
 
@@ -977,7 +1227,9 @@ class BydDataUpdateCoordinator(DataUpdateCoordinator[VehicleSnapshot]):
         """Return the next telemetry interval based on the current snapshot.
 
         Multipliers (applied to the user-configured ``_fixed_interval``):
-          * 1×   — actively charging OR vehicle on (driving / climate active)
+          * 1×   — driving OR fast-charging (vehicle on / DC charge)
+          * 4×   — AC slow-charging (|battery_power| below
+            :attr:`_AC_SLOW_CHARGE_THRESHOLD_W`)
           * 2×   — plugged & waiting (schedule pending or connector locked)
           * 4×   — online idle (cable in, no schedule, no charge)
           * 8×   — offline / sleeping
@@ -992,12 +1244,23 @@ class BydDataUpdateCoordinator(DataUpdateCoordinator[VehicleSnapshot]):
         else:
             realtime = snapshot.realtime
             charging = snapshot.charging
-            if charging is not None and getattr(charging, "charging_state", None) == 1:
+            is_active_charge = (
+                charging is not None and getattr(charging, "charging_state", None) == 1
+            ) or getattr(realtime, "is_charging", None) is True
+            is_vehicle_on = getattr(realtime, "is_vehicle_on", None) is True
+            if is_active_charge or is_vehicle_on:
                 multiplier = 1
-            elif getattr(realtime, "is_charging", None) is True:
-                multiplier = 1
-            elif getattr(realtime, "is_vehicle_on", None) is True:
-                multiplier = 1
+                if is_active_charge and not is_vehicle_on:
+                    power_w = getattr(realtime, "gl", None)
+                    try:
+                        power_abs = abs(float(power_w)) if power_w is not None else None
+                    except (TypeError, ValueError):
+                        power_abs = None
+                    if (
+                        power_abs is not None
+                        and power_abs < self._AC_SLOW_CHARGE_THRESHOLD_W
+                    ):
+                        multiplier = 4
             elif charging is not None and (
                 getattr(charging, "wait_status", None) == 1
                 or getattr(charging, "charging_state", None) == 9
@@ -1029,7 +1292,23 @@ class BydDataUpdateCoordinator(DataUpdateCoordinator[VehicleSnapshot]):
         ):
             multiplier *= self._MQTT_AWARE_BONUS
 
-        return base * multiplier
+        # Service-busy (1008) backoff: bursts of "Error de servicio" mean the
+        # backend wants fewer requests — widen the interval (doubling per extra
+        # failure past the threshold, capped) instead of hammering. Skipped
+        # during the startup window above (returned early), so a deep-asleep
+        # car is still chased before we ever back off.
+        if self._service_busy_streak >= self._SERVICE_BUSY_BACKOFF_THRESHOLD:
+            busy_factor = min(
+                2
+                ** (
+                    self._service_busy_streak - self._SERVICE_BUSY_BACKOFF_THRESHOLD + 1
+                ),
+                self._SERVICE_BUSY_BACKOFF_MAX_FACTOR,
+            )
+            multiplier *= busy_factor
+
+        interval = base * multiplier
+        return min(interval, self._MAX_BACKOFF_INTERVAL)
 
     def _apply_adaptive_interval(self, snapshot: VehicleSnapshot) -> None:
         """Update ``update_interval`` from the adaptive policy."""
@@ -1190,6 +1469,8 @@ class BydDataUpdateCoordinator(DataUpdateCoordinator[VehicleSnapshot]):
 
         payload: dict[str, Any] = {
             "vin": self._vin,
+            # ``is_on`` is what device_trigger.py matches on — keep it.
+            "is_on": is_on,
             "state": "on" if is_on else "off",
             "timestamp": now.isoformat(),
         }
@@ -1343,13 +1624,30 @@ class BydDataUpdateCoordinator(DataUpdateCoordinator[VehicleSnapshot]):
             )
 
     async def _async_post_plug_refresh(self) -> None:
-        """Background: refresh charging snapshot after plug detected."""
+        """Background: refresh charging snapshot + GPS after plug detected.
+
+        GPS often goes stale while the car was parked unplugged (last
+        successful ``getGpsInfo`` may be hours old).  Plug-in means the
+        car is awake on the cloud, so this is a free opportunity to
+        re-anchor the position before the next idle window.
+
+        GPS lives on a sibling coordinator (``BydGpsUpdateCoordinator``)
+        registered on the api, so reach across to fire its fetch.
+        """
         try:
             await self.async_fetch_charging()
         except Exception as exc:  # noqa: BLE001
             _LOGGER.warning(
                 "post-plug charging refresh failed vin=%s err=%s", self._vin, exc
             )
+        gps_coordinator = self._api._gps_coordinators.get(self._vin)
+        if gps_coordinator is not None:
+            try:
+                await gps_coordinator.async_fetch_gps()
+            except Exception as exc:  # noqa: BLE001
+                _LOGGER.warning(
+                    "post-plug GPS refresh failed vin=%s err=%s", self._vin, exc
+                )
 
     def _maybe_fire_phase_changed(
         self,
@@ -1376,12 +1674,31 @@ class BydDataUpdateCoordinator(DataUpdateCoordinator[VehicleSnapshot]):
             new_phase,
         )
 
+    # Power on/off edges are detected in _maybe_handle_state_transitions
+    # (push + poll paths) and handled by _handle_power_transition, which
+    # fires :event:`byd_vehicle_power_changed` with ``is_on`` (consumed by
+    # device_trigger.py) plus the trip snapshot/summary payload.
+
+    # AC slow charge surfaces micro-pauses in ``charging_state`` every
+    # ~30 seconds (the car deep-sleeps mid-charge and the cloud loses
+    # the chargingState=1 flag temporarily).  Coalesce two ON periods
+    # into the same session if the OFF gap between them is shorter
+    # than this window.  10 min is well above the observed 30-60s
+    # pause cadence and well below any legitimate short-then-restart
+    # scenario.
+    _CHARGE_SESSION_COALESCE_WINDOW_SECONDS = 600
+
     def _track_charge_session(
         self,
         previous: VehicleSnapshot | None,
         current: VehicleSnapshot,
     ) -> None:
-        """Record the timestamp + start SoC when ``charging_state`` -> 1."""
+        """Record the timestamp + start SoC when ``charging_state`` -> 1.
+
+        Coalesces micro-pauses during AC slow charge (see class constant
+        :attr:`_CHARGE_SESSION_COALESCE_WINDOW_SECONDS`): an OFF gap
+        shorter than the window does not end the current session.
+        """
 
         def _is_charging(snap: VehicleSnapshot | None) -> bool:
             if snap is None or snap.charging is None:
@@ -1401,22 +1718,62 @@ class BydDataUpdateCoordinator(DataUpdateCoordinator[VehicleSnapshot]):
                     return float(soc)
             return None
 
+        now = datetime.now(tz=UTC)
         was = _is_charging(previous)
         now_charging = _is_charging(current)
+
         if now_charging and not was:
-            self._charge_session_started_at = datetime.now(tz=UTC)
-            self._charge_session_start_soc = _current_soc(current)
-        elif not now_charging and was:
-            # Keep the timestamp on the way out so automations can read
-            # "last charge started at" — only clear on a fresh disconnect
-            connect_state = (
-                getattr(current.charging, "connect_state", None)
-                if current.charging
-                else None
+            # Resume vs new session: if the previous OFF window fell
+            # inside the coalesce budget AND a session was active,
+            # we keep started_at / start_soc / curve intact.
+            within_coalesce = (
+                self._charging_off_since is not None
+                and (now - self._charging_off_since).total_seconds()
+                < self._CHARGE_SESSION_COALESCE_WINDOW_SECONDS
             )
-            if connect_state == 0:
-                self._charge_session_started_at = None
-                self._charge_session_start_soc = None
+            if not (within_coalesce and self._charge_session_started_at is not None):
+                self._charge_session_started_at = now
+                self._charge_session_start_soc = _current_soc(current)
+                self._charge_curve = []
+            self._charging_off_since = None
+
+        elif not now_charging and was:
+            # Mark when charging dropped out.  Defer closing the session
+            # until the gap exceeds the coalesce window — see below.
+            self._charging_off_since = now
+
+        # If we're sitting in an OFF window past the coalesce budget,
+        # actually close the session.  Runs on every update so the
+        # timeout fires even without further state transitions.
+        if (
+            self._charging_off_since is not None
+            and not now_charging
+            and self._charge_session_started_at is not None
+            and (now - self._charging_off_since).total_seconds()
+            >= self._CHARGE_SESSION_COALESCE_WINDOW_SECONDS
+        ):
+            self._record_finished_session(current, _current_soc(current))
+            self._charge_session_started_at = None
+            self._charge_session_start_soc = None
+            self._charging_off_since = None
+
+        if now_charging:
+            soc = _current_soc(current)
+            power = None
+            if current.realtime is not None:
+                gl = getattr(current.realtime, "gl", None)
+                if gl is not None:
+                    power = round(abs(float(gl)) / 1000.0, 2)
+            if soc is not None:
+                self._charge_curve.append(
+                    {
+                        "t": datetime.now(tz=UTC).isoformat(),
+                        "soc": soc,
+                        "kw": power,
+                    }
+                )
+                if len(self._charge_curve) > 200:
+                    self._charge_curve = self._charge_curve[-200:]
 
     @property
     def trip_started_at(self) -> datetime | None:
@@ -1476,11 +1833,64 @@ class BydDataUpdateCoordinator(DataUpdateCoordinator[VehicleSnapshot]):
         return self._charge_session_started_at
 
     @property
+    def charge_curve(self) -> list[dict[str, Any]]:
+        """Timeline of (timestamp, SoC, kW) samples for the current session."""
+        return list(self._charge_curve)
+
+    @property
+    def charge_sessions(self) -> list[dict[str, Any]]:
+        """Summaries of the last completed charging sessions (max 10)."""
+        return list(self._charge_sessions)
+
+    def _record_finished_session(
+        self, current: VehicleSnapshot, end_soc: float | None
+    ) -> None:
+        """Append a finished-session summary to the rolling history."""
+        if self._charge_session_started_at is None:
+            return
+        started = self._charge_session_started_at
+        duration_min = int((datetime.now(tz=UTC) - started).total_seconds() // 60)
+        start_soc = self._charge_session_start_soc
+        soc_added = None
+        kwh_added = None
+        if start_soc is not None and end_soc is not None:
+            soc_added = round(max(0.0, float(end_soc) - float(start_soc)), 1)
+            kwh_added = round(soc_added * 82.5 / 100.0, 2)
+        powers = [kw for s in self._charge_curve if (kw := s.get("kw")) is not None]
+        avg_kw = round(sum(powers) / len(powers), 2) if powers else None
+        self._charge_sessions.append(
+            {
+                "started_at": started.isoformat(),
+                "ended_at": datetime.now(tz=UTC).isoformat(),
+                "duration_minutes": duration_min,
+                "start_soc": start_soc,
+                "end_soc": end_soc,
+                "soc_added": soc_added,
+                "kwh_added": kwh_added,
+                "avg_kw": avg_kw,
+                "samples": len(self._charge_curve),
+            }
+        )
+        if len(self._charge_sessions) > 10:
+            self._charge_sessions = self._charge_sessions[-10:]
+
+    @property
     def charge_session_duration_minutes(self) -> int | None:
-        """Minutes elapsed since the last charge session began."""
+        """Minutes elapsed in the current charge session.
+
+        Freezes once ``charging_state`` flips off so the value reads as
+        "how long the actual charge lasted", not "how long ago we started".
+        Without this guard the duration kept growing for the entire
+        coalesce-window-plus-quiet-period after the car finished
+        charging — observed in production where the duration sensor
+        climbed to ``284 min`` ~80 min after a session that really
+        ended at ``204 min``, because no fresh poll arrived to trigger
+        the eventual reset in ``_track_charge_session``.
+        """
         if self._charge_session_started_at is None:
             return None
-        delta = datetime.now(tz=UTC) - self._charge_session_started_at
+        end = self._charging_off_since or datetime.now(tz=UTC)
+        delta = end - self._charge_session_started_at
         return int(delta.total_seconds() // 60)
 
     @property
@@ -1555,6 +1965,21 @@ class BydDataUpdateCoordinator(DataUpdateCoordinator[VehicleSnapshot]):
         return self._last_successful_fetch_at
 
     @property
+    def last_energy_fetch_at(self) -> datetime | None:
+        """Timestamp of the most recent ``Fetch energy data`` attempt."""
+        return self._last_energy_fetch_at
+
+    @property
+    def last_energy_fetch_status(self) -> str | None:
+        """Outcome of the most recent ``Fetch energy data`` attempt.
+
+        One of ``ok`` (snapshot updated), ``unsupported`` (cloud
+        rejected with code=1001 or similar), or ``error`` (generic
+        failure). ``None`` until the first attempt fires.
+        """
+        return self._last_energy_fetch_status
+
+    @property
     def is_cloud_responsive(self) -> bool:
         """Whether the cloud has been responding recently.
 
@@ -1622,7 +2047,13 @@ class BydDataUpdateCoordinator(DataUpdateCoordinator[VehicleSnapshot]):
     # ------------------------------------------------------------------
 
     async def async_fetch_realtime(self) -> None:
-        """Service handler: fetch fresh realtime via BydCar."""
+        """Service handler: fetch fresh realtime via BydCar.
+
+        Mirrors :meth:`async_fetch_charging` — pushes the refreshed
+        snapshot via ``async_set_updated_data`` so dependent sensors
+        refresh immediately instead of waiting for the next adaptive
+        poll cycle (which can be 8 min away during idle/sleep buckets).
+        """
         if self._car is None:
             return
         try:
@@ -1632,6 +2063,7 @@ class BydDataUpdateCoordinator(DataUpdateCoordinator[VehicleSnapshot]):
                 self._vin[-6:],
                 result,
             )
+            self.async_set_updated_data(self._car.state)
         except Exception as exc:  # noqa: BLE001
             _LOGGER.warning(
                 "Service fetch_realtime failed: vin=%s, error=%s",
@@ -1640,7 +2072,12 @@ class BydDataUpdateCoordinator(DataUpdateCoordinator[VehicleSnapshot]):
             )
 
     async def async_fetch_hvac(self) -> None:
-        """Service handler: fetch fresh HVAC via BydCar."""
+        """Service handler: fetch fresh HVAC via BydCar.
+
+        Mirrors :meth:`async_fetch_charging` — propagates the refreshed
+        snapshot so HVAC-derived sensors (wind position, recirculation,
+        target temperature) refresh immediately on demand.
+        """
         if self._car is None:
             return
         try:
@@ -1650,6 +2087,7 @@ class BydDataUpdateCoordinator(DataUpdateCoordinator[VehicleSnapshot]):
                 self._vin[-6:],
                 result,
             )
+            self.async_set_updated_data(self._car.state)
         except Exception as exc:  # noqa: BLE001
             _LOGGER.warning(
                 "Service fetch_hvac failed: vin=%s, error=%s",
@@ -1703,12 +2141,25 @@ class BydDataUpdateCoordinator(DataUpdateCoordinator[VehicleSnapshot]):
         return self._energy_distribution_supported
 
     async def async_fetch_energy(self) -> None:
-        """Service handler: fetch energy consumption and log the raw response."""
+        """Service handler: fetch energy consumption and log the raw response.
+
+        Mirrors :meth:`async_fetch_charging` — pushes the refreshed snapshot
+        out via ``async_set_updated_data`` so the dependent EnergyConsumption
+        sensors update immediately instead of waiting for the next poll
+        cycle (up to 8 min away with the adaptive backoff during idle).
+
+        Always propagates at the end so the user sees visual feedback
+        (sensor ``last_reported`` ticks) even when the endpoint is
+        unsupported on this VIN — otherwise the button looks broken on
+        e.g. Sealion 7 EU where the cloud returns ``code=1001``.
+        """
         if self._car is None:
             return
+        self._last_energy_fetch_at = datetime.now(tz=UTC)
         try:
             result = await self._car.update_energy()
             self._energy_supported = True
+            self._last_energy_fetch_status = "ok"
             nearest = getattr(result, "nearest_energy_consumption", None)
             if nearest is not None:
                 self._energy_distribution_supported = any(
@@ -1728,6 +2179,7 @@ class BydDataUpdateCoordinator(DataUpdateCoordinator[VehicleSnapshot]):
         except BydEndpointNotSupportedError as exc:
             self._energy_supported = False
             self._energy_distribution_supported = False
+            self._last_energy_fetch_status = "unsupported"
             _LOGGER.info(
                 "fetch_energy not supported for this VIN; "
                 "distribution sensors will be skipped: vin=%s, code=%s",
@@ -1735,11 +2187,130 @@ class BydDataUpdateCoordinator(DataUpdateCoordinator[VehicleSnapshot]):
                 getattr(exc, "code", "?"),
             )
         except Exception as exc:  # noqa: BLE001
+            self._last_energy_fetch_status = "error"
             _LOGGER.warning(
                 "Service fetch_energy failed: vin=%s, error=%s",
                 self._vin,
                 exc,
             )
+        # Always propagate — covers every path so the diagnostic
+        # ``last_energy_fetch_at`` / ``last_energy_fetch_status``
+        # sensors tick on every button press, and the dependent
+        # EnergyConsumption sensors refresh on the success path.
+        if self._car is not None:
+            self.async_set_updated_data(self._car.state)
+
+    async def async_request_schedule_update(
+        self, property_name: str, new_value: Any
+    ) -> None:
+        """Queue a debounced update for the charging schedule."""
+        self._pending_schedule_updates[property_name] = new_value
+
+        if self._debounce_timer is not None:
+            self._debounce_timer()
+            self._debounce_timer = None
+
+        self.update_pending = True
+
+        @callback
+        def _execute_update(_now: Any) -> None:
+            self._debounce_timer = None
+            self.hass.async_create_task(self._async_execute_schedule_update())
+
+        self._debounce_timer = async_call_later(
+            self.hass,
+            10.0,
+            _execute_update,
+        )
+
+    async def _async_execute_schedule_update(self) -> None:
+        """Execute the pending schedule update.
+
+        Bails out cleanly when there is no live charging-schedule baseline
+        to merge against — refusing to overwrite the cloud with synthetic
+        defaults is safer than guessing.
+        """
+        if not self._pending_schedule_updates:
+            self.update_pending = False
+            return
+
+        charge = None
+        if self.data and self.data.charging_schedule:
+            charge = self.data.charging_schedule.charge
+        if charge is None:
+            _LOGGER.warning(
+                "Schedule update aborted vin=%s — no current schedule baseline",
+                self._vin[-6:],
+            )
+            self._pending_schedule_updates.clear()
+            self.update_pending = False
+            return
+
+        updates = self._pending_schedule_updates
+        enabled = updates.get(
+            "enabled", charge.status if charge.status is not None else True
+        )
+        charge_to_full = updates.get(
+            "charge_to_full",
+            charge.charge_until_full if charge.charge_until_full is not None else True,
+        )
+        pattern = updates.get(
+            "pattern", charge.charge_way if charge.charge_way is not None else "e"
+        )
+
+        start_time_obj = updates.get("start_time")
+        if start_time_obj is not None:
+            start_charge_time = start_time_obj.strftime("%H:%M")
+        elif charge.start_time is not None:
+            start_charge_time = charge.start_time.strftime("%H:%M")
+        else:
+            _LOGGER.warning(
+                "Schedule update aborted vin=%s — no start_time baseline",
+                self._vin[-6:],
+            )
+            self._pending_schedule_updates.clear()
+            self.update_pending = False
+            return
+
+        if charge_to_full:
+            end_charge_time = "full"
+        else:
+            end_time_obj = updates.get("end_time")
+            if end_time_obj is not None:
+                end_charge_time = end_time_obj.strftime("%H:%M")
+            elif charge.end_time is not None:
+                end_charge_time = charge.end_time.strftime("%H:%M")
+            else:
+                _LOGGER.warning(
+                    "Schedule update aborted vin=%s — no end_time baseline",
+                    self._vin[-6:],
+                )
+                self._pending_schedule_updates.clear()
+                self.update_pending = False
+                return
+
+        self._pending_schedule_updates.clear()
+
+        try:
+            await self.async_save_charging_schedule(
+                start_charge_time=start_charge_time,
+                end_charge_time=end_charge_time,
+                charge_way=pattern,
+                enabled=enabled,
+            )
+        except (
+            BydEndpointNotSupportedError,
+            BydRemoteControlError,
+            BydAuthenticationError,
+            BydApiError,
+            BydTransportError,
+        ) as exc:
+            _LOGGER.warning(
+                "Debounced schedule save failed vin=%s: %s", self._vin[-6:], exc
+            )
+        finally:
+            self.update_pending = False
+            await self.async_request_refresh()
 
     async def async_save_charging_schedule(
         self,
@@ -1846,6 +2417,40 @@ class BydDataUpdateCoordinator(DataUpdateCoordinator[VehicleSnapshot]):
                 exc_info=True,
             )
 
+    async def async_stop_charging(self) -> None:
+        """Stop charging immediately and refresh charging state."""
+        if self._car is None:
+            raise HomeAssistantError(
+                f"BYD vehicle {self._vin[-6:]} not ready for charging commands"
+            )
+        try:
+            result = await self._car.stop_charging()
+        except BydEndpointNotSupportedError as exc:
+            raise HomeAssistantError(
+                "stop_charging not supported for this vehicle/region"
+            ) from exc
+        except BydRemoteControlError as exc:
+            raise HomeAssistantError(f"stop_charging failed to settle: {exc}") from exc
+        except BydAuthenticationError as exc:
+            raise HomeAssistantError(f"stop_charging failed (auth): {exc}") from exc
+        except (BydApiError, BydTransportError) as exc:
+            raise HomeAssistantError(f"stop_charging failed: {exc}") from exc
+
+        _LOGGER.info(
+            "stop_charging settled: vin=%s, message=%s",
+            self._vin[-6:],
+            result.message,
+        )
+
+        try:
+            await self._car.update_charging()
+            await self.async_request_refresh()
+        except Exception:  # noqa: BLE001
+            _LOGGER.debug(
+                "Post-stop_charging refresh failed (non-fatal)",
+                exc_info=True,
+            )
+
 
 class BydGpsUpdateCoordinator(DataUpdateCoordinator[VehicleSnapshot]):
     """Coordinator for GPS updates for a single VIN.
@@ -1856,7 +2461,7 @@ class BydGpsUpdateCoordinator(DataUpdateCoordinator[VehicleSnapshot]):
     """
 
     # See note on BydDataUpdateCoordinator above — same parent annotations.
-    data: VehicleSnapshot | None  # type: ignore[assignment]
+    data: VehicleSnapshot | None
     update_interval: timedelta | None
 
     def __init__(

@@ -11,7 +11,7 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.entity import EntityCategory
-from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 from pybyd.car import BydCar
 from pybyd.models.vehicle import Vehicle
 
@@ -80,7 +80,7 @@ BUTTON_DESCRIPTIONS: tuple[BydButtonDescription, ...] = (
 async def async_setup_entry(
     hass: HomeAssistant,
     entry: ConfigEntry,
-    async_add_entities: AddEntitiesCallback,
+    async_add_entities: AddConfigEntryEntitiesCallback,
 ) -> None:
     """Set up BYD buttons from a config entry."""
     data = hass.data[DOMAIN][entry.entry_id]
@@ -94,6 +94,7 @@ async def async_setup_entry(
 
         entities.append(BydForcePollButton(coordinator, gps_coordinator, vin, vehicle))
         entities.append(BydStartChargingButton(coordinator, vin, vehicle))
+        entities.append(BydStopChargingButton(coordinator, vin, vehicle))
         entities.append(BydFetchEnergyButton(coordinator, vin, vehicle))
         for description in BUTTON_DESCRIPTIONS:
             if not coordinator.capability_available(description.capability_key):
@@ -196,9 +197,9 @@ class BydStartChargingButton(BydVehicleEntity, ButtonEntity):
     def available(self) -> bool:
         # BYD's cloud rejects /control/smartCharge/changeChargeStatue with
         # res=3 "Operation failure" when the vehicle is already in the
-        # target state — either already charging, or at 100 % SoC with
-        # nothing to charge (see references/changeResult.md). Hide the
-        # button in those cases so users don't get a confusing error.
+        # target state — either already charging, at 100 % SoC, or when
+        # the cable isn't physically plugged in.  Hide the button in
+        # those cases so users don't get a confusing error.
         #
         # Prefer realtime fields (always present, drive the user-visible
         # battery_level / charging sensors) over the charging snapshot
@@ -223,10 +224,55 @@ class BydStartChargingButton(BydVehicleEntity, ButtonEntity):
             soc = snapshot.charging.soc
         if soc is not None and soc >= 100:
             return False
+        # Cable must be plugged in.  Source from the charging endpoint
+        # which PR #144 made the authoritative plug state — realtime's
+        # connectState frequently sits at -1 (sentinel) on Sealion 7 EU
+        # so we only treat charging.connect_state as a hard "no".
+        if snapshot.charging is not None:
+            connect_state = getattr(snapshot.charging, "connect_state", None)
+            if connect_state is not None and not connect_state:
+                return False
         return True
 
     async def async_press(self) -> None:
         await self.coordinator.async_start_charging()
+
+
+class BydStopChargingButton(BydVehicleEntity, ButtonEntity):
+    """Button that stops charging immediately."""
+
+    _attr_has_entity_name = True
+    _attr_translation_key = "stop_charging"
+    _attr_icon = "mdi:stop"
+
+    def __init__(
+        self,
+        coordinator: BydDataUpdateCoordinator,
+        vin: str,
+        vehicle: Vehicle,
+    ) -> None:
+        super().__init__(coordinator)
+        self._vin = vin
+        self._vehicle = vehicle
+        self._attr_unique_id = f"{vin}_button_stop_charging"
+
+    @property
+    def available(self) -> bool:
+        """Only show while the car is actually charging."""
+        if not super().available:
+            return False
+        snapshot = self._snapshot()
+        if snapshot is None:
+            return False
+        is_charging: bool | None = None
+        if snapshot.realtime is not None:
+            is_charging = snapshot.realtime.is_charging
+        if is_charging is None and snapshot.charging is not None:
+            is_charging = snapshot.charging.is_charging
+        return bool(is_charging)
+
+    async def async_press(self) -> None:
+        await self.coordinator.async_stop_charging()
 
 
 class BydFetchEnergyButton(BydVehicleEntity, ButtonEntity):

@@ -16,6 +16,7 @@ PLATFORMS: list[Platform] = [
     Platform.SELECT,
     Platform.SENSOR,
     Platform.SWITCH,
+    Platform.TIME,
 ]
 
 CONF_BASE_URL = "base_url"
@@ -123,11 +124,6 @@ NODE_METADATA: dict[int, dict[str, str]] = {
         "api_base_url": "https://dilinkappoversea-kz.byd.auto",
         "push_server": "https://dilinkpush-kz.byd.auto:8443",
     },
-}
-
-# Backward-compatible mapping retained for existing entry defaults and logs.
-BASE_URLS: dict[str, str] = {
-    node["region"]: node["api_base_url"] for node in NODE_METADATA.values()
 }
 
 # country label -> (country code, default language)

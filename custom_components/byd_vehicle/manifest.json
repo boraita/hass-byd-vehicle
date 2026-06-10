@@ -8,8 +8,11 @@
   "documentation": "https://github.com/jkaberg/hass-byd-vehicle",
   "iot_class": "cloud_polling",
   "issue_tracker": "https://github.com/jkaberg/hass-byd-vehicle/issues",
-  "requirements": [
-    "pybyd @ git+https://github.com/boraita/pyBYD@3f2ae610becb0ebabd42e45148aee20d22322d37"
+  "loggers": [
+    "pybyd"
   ],
-  "version": "0.0.80-sealion.17"
+  "requirements": [
+    "pybyd@git+https://github.com/boraita/pyBYD@dd74ca9c37a233c514b52778ffb7b1d5c1baa219"
+  ],
+  "version": "0.0.81-sealion.82"
 }

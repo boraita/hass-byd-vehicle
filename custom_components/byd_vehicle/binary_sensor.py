@@ -15,7 +15,7 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import STATE_ON, EntityCategory
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import entity_registry as er
-from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 from homeassistant.helpers.restore_state import RestoreEntity
 from pybyd.models.realtime import (
     DoorOpenState,
@@ -55,6 +55,29 @@ def _attr_truthy(attr_name: str) -> Callable[[Any], bool | None]:
     return _fn
 
 
+def _attr_truthy_online_only(attr_name: str) -> Callable[[Any], bool | None]:
+    """Return a value_fn that's only trusted while the vehicle is online.
+
+    BYD's cloud snapshot can flip latched state flags (sentry, etc.)
+    back to ``0`` whenever the T-Box drops off the network, even though
+    the underlying physical state didn't change.  Returning ``None``
+    when offline makes the binary sensor base class fall back to its
+    cached ``_last_is_on`` instead of publishing a misleading ``off``.
+    """
+
+    def _fn(obj: Any) -> bool | None:
+        if obj is None:
+            return None
+        if getattr(obj, "is_online", True) is False:
+            return None
+        val = getattr(obj, attr_name, None)
+        if val is None:
+            return None
+        return bool(val)
+
+    return _fn
+
+
 def _attr_equals(attr_name: str, target: Any) -> Callable[[Any], bool | None]:
     """Return a value_fn that checks ``getattr(obj, attr_name) == target``."""
 
@@ -79,6 +102,46 @@ def _sentinel_int_on(attr_name: str) -> Callable[[Any], bool | None]:
         if val is None:
             return None
         return val > 0
+
+    return _fn
+
+
+_TIRE_STATUS_CORNERS: tuple[str, ...] = (
+    "left_front_tire_status",
+    "right_front_tire_status",
+    "left_rear_tire_status",
+    "right_rear_tire_status",
+)
+
+
+def _tire_status_with_sentinel_guard(attr_name: str) -> Callable[[Any], bool | None]:
+    """Per-corner ``*_tire_status`` with cross-field sentinel guard.
+
+    Some VINs (notably Sealion 7 EU) report all four corner fields as
+    ``0`` permanently even though pressures populate normally — the
+    status channel is unused.  Without a guard the four binary sensors
+    sit at ``off`` ("no problem") indistinguishably from a working TPMS
+    array, so a future real fault would be masked.
+
+    Cross-field signature of the sentinel payload: all four corners ``0``
+    AND ``tirepressure_system`` also ``0``.  When that matches, return
+    ``None`` so the sensor reads ``unavailable``.  Any single non-zero
+    corner is treated as a real fault and passes through immediately.
+    """
+
+    def _fn(obj: Any) -> bool | None:
+        val = getattr(obj, attr_name, None)
+        if val is None:
+            return None
+        if val > 0:
+            return True
+        all_corners_zero = all(
+            (getattr(obj, corner, None) or 0) == 0 for corner in _TIRE_STATUS_CORNERS
+        )
+        system_zero = (getattr(obj, "tirepressure_system", None) or 0) == 0
+        if all_corners_zero and system_zero:
+            return None
+        return False
 
     return _fn
 
@@ -145,7 +208,7 @@ BINARY_SENSOR_DESCRIPTIONS: tuple[BydBinarySensorDescription, ...] = (
         key="sentry_status",
         source="realtime",
         icon="mdi:shield-car",
-        value_fn=_attr_truthy("sentry_status"),
+        value_fn=_attr_truthy_online_only("sentry_status"),
     ),
     # ====================================
     # Individual doors (disabled)
@@ -417,7 +480,7 @@ BINARY_SENSOR_DESCRIPTIONS: tuple[BydBinarySensorDescription, ...] = (
         icon="mdi:car-tire-alert",
         entity_registry_enabled_default=False,
         entity_category=EntityCategory.DIAGNOSTIC,
-        value_fn=_sentinel_int_on("left_front_tire_status"),
+        value_fn=_tire_status_with_sentinel_guard("left_front_tire_status"),
     ),
     BydBinarySensorDescription(
         key="right_front_tire_status",
@@ -426,7 +489,7 @@ BINARY_SENSOR_DESCRIPTIONS: tuple[BydBinarySensorDescription, ...] = (
         icon="mdi:car-tire-alert",
         entity_registry_enabled_default=False,
         entity_category=EntityCategory.DIAGNOSTIC,
-        value_fn=_sentinel_int_on("right_front_tire_status"),
+        value_fn=_tire_status_with_sentinel_guard("right_front_tire_status"),
     ),
     BydBinarySensorDescription(
         key="left_rear_tire_status",
@@ -435,7 +498,7 @@ BINARY_SENSOR_DESCRIPTIONS: tuple[BydBinarySensorDescription, ...] = (
         icon="mdi:car-tire-alert",
         entity_registry_enabled_default=False,
         entity_category=EntityCategory.DIAGNOSTIC,
-        value_fn=_sentinel_int_on("left_rear_tire_status"),
+        value_fn=_tire_status_with_sentinel_guard("left_rear_tire_status"),
     ),
     BydBinarySensorDescription(
         key="right_rear_tire_status",
@@ -444,7 +507,7 @@ BINARY_SENSOR_DESCRIPTIONS: tuple[BydBinarySensorDescription, ...] = (
         icon="mdi:car-tire-alert",
         entity_registry_enabled_default=False,
         entity_category=EntityCategory.DIAGNOSTIC,
-        value_fn=_sentinel_int_on("right_rear_tire_status"),
+        value_fn=_tire_status_with_sentinel_guard("right_rear_tire_status"),
     ),
     BydBinarySensorDescription(
         key="upgrade_status",
@@ -501,7 +564,7 @@ BINARY_SENSOR_DESCRIPTIONS: tuple[BydBinarySensorDescription, ...] = (
         key="less_one_min",
         source="realtime",
         icon="mdi:timer-alert",
-        entity_registry_enabled_default=False,
+        entity_registry_enabled_default=True,
         entity_category=EntityCategory.DIAGNOSTIC,
         value_fn=_attr_truthy("less_one_min"),
     ),
@@ -554,7 +617,7 @@ _LEGACY_BINARY_SENSOR_UNIQUE_ID_REMOVALS: frozenset[str] = frozenset(
 async def async_setup_entry(
     hass: HomeAssistant,
     entry: ConfigEntry,
-    async_add_entities: AddEntitiesCallback,
+    async_add_entities: AddConfigEntryEntitiesCallback,
 ) -> None:
     """Set up BYD binary sensors from a config entry."""
     data = hass.data[DOMAIN][entry.entry_id]

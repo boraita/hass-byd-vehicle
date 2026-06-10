@@ -1,0 +1,663 @@
+###############################################################################
+# BYD Sealion 7 — Exclusive Dashboard (storage mode)
+#
+# How to install:
+#   1. Place the car photo at /config/www/dashboard-car/sealion.jpg
+#      (served as /local/dashboard-car/sealion.jpg). PNG/webp also fine —
+#      just adjust the extension in the picture-elements card below.
+#   2. Install the required HACS frontend repos:
+#        - custom-cards/button-card        (lovelace-button-card)
+#        - piitaya/lovelace-mushroom       (mushroom)
+#        - kalkih/mini-graph-card          (mini-graph-card)
+#        - thomasloven/lovelace-card-mod   (card-mod)
+#      Reload resources after install (Settings → Dashboards → ⋮ → Resources).
+#   3. Settings → Dashboards → Add Dashboard → "BYD Sealion 7", icon
+#      mdi:car-electric, then open it → ⋮ → Edit dashboard → ⋮ →
+#      Raw configuration editor → paste the contents of this file.
+#
+# Entity IDs assume the auto-generated slug `byd_sealion_7`. If yours
+# differs (e.g. multi-vehicle setups), use Search & Replace on the slug.
+###############################################################################
+
+title: BYD Sealion 7
+views:
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # 1) OVERVIEW
+  # ─────────────────────────────────────────────────────────────────────────
+  - title: Overview
+    path: overview
+    icon: mdi:car-electric
+    type: sections
+    max_columns: 3
+    sections:
+
+      # Hero — photo with overlay
+      - type: grid
+        column_span: 3
+        cards:
+          - type: picture-elements
+            image: /local/dashboard-car/sealion.jpg
+            card_mod:
+              style: |
+                ha-card {
+                  border-radius: 18px;
+                  overflow: hidden;
+                  box-shadow: 0 8px 28px rgba(0,0,0,0.25);
+                  background: radial-gradient(circle at top, #1e3a5f 0%, #0a1929 100%);
+                }
+                ha-card img {
+                  filter: drop-shadow(0 6px 16px rgba(0,0,0,0.45));
+                }
+            elements:
+              - type: state-label
+                entity: sensor.byd_sealion_7_battery_level
+                prefix: "🔋  "
+                suffix: " %"
+                style:
+                  top: 8%
+                  left: 6%
+                  color: white
+                  font-size: 38px
+                  font-weight: 700
+                  text-shadow: 0 2px 6px rgba(0,0,0,0.6)
+              - type: state-label
+                entity: sensor.byd_sealion_7_range
+                suffix: " km"
+                style:
+                  top: 20%
+                  left: 6%
+                  color: rgba(255,255,255,0.85)
+                  font-size: 18px
+                  font-weight: 500
+              - type: state-label
+                entity: sensor.byd_sealion_7_charge_session_phase
+                style:
+                  top: 8%
+                  right: 6%
+                  color: white
+                  font-size: 14px
+                  font-weight: 500
+                  background: rgba(0,0,0,0.35)
+                  padding: 4px 10px
+                  border-radius: 999px
+                  text-transform: uppercase
+                  letter-spacing: 1px
+              - type: state-icon
+                entity: lock.byd_sealion_7_lock
+                style:
+                  bottom: 10%
+                  left: 8%
+                  --paper-item-icon-color: white
+                  filter: drop-shadow(0 2px 4px rgba(0,0,0,0.7))
+              - type: state-icon
+                entity: binary_sensor.byd_sealion_7_online
+                style:
+                  bottom: 10%
+                  left: 18%
+                  --paper-item-icon-color: white
+                  filter: drop-shadow(0 2px 4px rgba(0,0,0,0.7))
+              - type: state-icon
+                entity: binary_sensor.byd_sealion_7_plug
+                style:
+                  bottom: 10%
+                  left: 28%
+                  --paper-item-icon-color: white
+                  filter: drop-shadow(0 2px 4px rgba(0,0,0,0.7))
+              - type: state-label
+                entity: device_tracker.byd_sealion_7_location
+                prefix: "📍 "
+                style:
+                  bottom: 10%
+                  right: 6%
+                  color: white
+                  font-size: 14px
+                  background: rgba(0,0,0,0.35)
+                  padding: 4px 10px
+                  border-radius: 999px
+
+      # Top chips
+      - type: grid
+        column_span: 3
+        cards:
+          - type: custom:mushroom-chips-card
+            alignment: center
+            chips:
+              - type: entity
+                entity: sensor.byd_sealion_7_charging_state
+                icon: mdi:ev-station
+                content_info: state
+              - type: entity
+                entity: sensor.byd_sealion_7_power
+                icon: mdi:flash
+              - type: entity
+                entity: sensor.byd_sealion_7_speed
+                icon: mdi:speedometer
+              - type: entity
+                entity: sensor.byd_sealion_7_cabin_temperature
+                icon: mdi:car-seat
+              - type: entity
+                entity: sensor.byd_sealion_7_exterior_temperature
+                icon: mdi:thermometer
+              - type: entity
+                entity: binary_sensor.byd_sealion_7_doors
+                icon: mdi:car-door
+              - type: entity
+                entity: binary_sensor.byd_sealion_7_windows
+                icon: mdi:car-door
+              - type: entity
+                entity: binary_sensor.byd_sealion_7_locked
+                icon: mdi:lock
+              - type: entity
+                entity: binary_sensor.byd_sealion_7_online
+                icon: mdi:cloud
+
+      # Charging block
+      - type: grid
+        cards:
+          - type: heading
+            heading: Charging
+            icon: mdi:ev-station
+          - type: custom:mushroom-template-card
+            primary: "{{ states('sensor.byd_sealion_7_battery_level') }} %"
+            secondary: >-
+              {% set p = states('sensor.byd_sealion_7_power') | float(0) %}
+              {% if p > 0 %}+{{ p }} kW · {% endif %}
+              {{ states('sensor.byd_sealion_7_range') }} km range
+            icon: mdi:battery-charging
+            icon_color: >-
+              {% set b = states('sensor.byd_sealion_7_battery_level') | float(0) %}
+              {% if b < 20 %}red{% elif b < 50 %}orange{% else %}green{% endif %}
+            badge_icon: >-
+              {% if is_state('binary_sensor.byd_sealion_7_charging','on') %}mdi:lightning-bolt{% endif %}
+            badge_color: amber
+            fill_container: true
+            multiline_secondary: true
+          - type: custom:mini-graph-card
+            name: Battery
+            entities:
+              - sensor.byd_sealion_7_battery_level
+            hours_to_show: 48
+            points_per_hour: 1
+            line_width: 3
+            show:
+              labels: true
+              extrema: true
+              fill: fade
+            color_thresholds:
+              - value: 20
+                color: "#ef5350"
+              - value: 50
+                color: "#ffa726"
+              - value: 80
+                color: "#66bb6a"
+          - type: custom:mini-graph-card
+            name: Power
+            entities:
+              - entity: sensor.byd_sealion_7_power
+                color: var(--accent-color)
+            hours_to_show: 24
+            points_per_hour: 4
+            line_width: 2
+            show:
+              labels: true
+              extrema: true
+              fill: fade
+          - type: entities
+            title: Session
+            state_color: true
+            entities:
+              - entity: sensor.byd_sealion_7_charge_session_phase
+                name: Phase
+              - entity: sensor.byd_sealion_7_charge_session_started_at
+                name: Started
+              - entity: sensor.byd_sealion_7_minutes_to_full
+                name: Minutes to full
+              - entity: sensor.byd_sealion_7_hours_to_full
+                name: Hours to full
+              - entity: sensor.byd_sealion_7_charge_remaining_time
+                name: Charge remaining
+              - entity: binary_sensor.byd_sealion_7_scheduled_charge_enabled
+                name: Schedule enabled
+              - entity: sensor.byd_sealion_7_scheduled_charge_start_time
+                name: Schedule start
+              - entity: sensor.byd_sealion_7_scheduled_charge_end_time
+                name: Schedule end
+
+      # Climate block
+      - type: grid
+        cards:
+          - type: heading
+            heading: Climate
+            icon: mdi:air-conditioner
+          - type: thermostat
+            entity: climate.byd_sealion_7_climate
+          - type: custom:mushroom-chips-card
+            alignment: center
+            chips:
+              - type: entity
+                entity: switch.byd_sealion_7_a_c_on
+                icon: mdi:air-conditioner
+                tap_action: { action: toggle }
+              - type: entity
+                entity: switch.byd_sealion_7_steering_wheel_heating
+                icon: mdi:steering
+                tap_action: { action: toggle }
+              - type: entity
+                entity: sensor.byd_sealion_7_cabin_temperature
+                icon: mdi:home-thermometer
+              - type: entity
+                entity: sensor.byd_sealion_7_exterior_temperature
+                icon: mdi:thermometer
+              - type: entity
+                entity: sensor.byd_sealion_7_pm2_5
+                icon: mdi:air-filter
+          - type: entities
+            title: Seats
+            entities:
+              - entity: select.byd_sealion_7_driver_seat_heating
+                name: Driver heating
+              - entity: select.byd_sealion_7_driver_seat_ventilation
+                name: Driver ventilation
+              - entity: select.byd_sealion_7_passenger_seat_heating
+                name: Passenger heating
+              - entity: select.byd_sealion_7_passenger_seat_ventilation
+                name: Passenger ventilation
+              - entity: select.byd_sealion_7_rear_left_seat_heating
+                name: Rear left heating
+              - entity: select.byd_sealion_7_rear_right_seat_heating
+                name: Rear right heating
+
+      # Controls block
+      - type: grid
+        cards:
+          - type: heading
+            heading: Controls
+            icon: mdi:remote
+          - type: grid
+            columns: 3
+            square: false
+            cards:
+              - type: custom:button-card
+                entity: button.byd_sealion_7_find_car
+                name: Find
+                icon: mdi:car-search
+                show_state: false
+                tap_action: { action: call-service, service: button.press, service_data: { entity_id: button.byd_sealion_7_find_car } }
+                styles:
+                  card: [{ height: 86px }, { border-radius: 14px }]
+                  icon: [{ color: var(--info-color) }]
+              - type: custom:button-card
+                entity: button.byd_sealion_7_flash_lights
+                name: Flash
+                icon: mdi:car-light-high
+                show_state: false
+                tap_action: { action: call-service, service: button.press, service_data: { entity_id: button.byd_sealion_7_flash_lights } }
+                styles:
+                  card: [{ height: 86px }, { border-radius: 14px }]
+                  icon: [{ color: var(--warning-color) }]
+              - type: custom:button-card
+                entity: button.byd_sealion_7_close_windows
+                name: Close win
+                icon: mdi:window-closed
+                show_state: false
+                tap_action: { action: call-service, service: button.press, service_data: { entity_id: button.byd_sealion_7_close_windows } }
+                styles:
+                  card: [{ height: 86px }, { border-radius: 14px }]
+              - type: custom:button-card
+                entity: button.byd_sealion_7_open_trunk
+                name: Trunk open
+                icon: mdi:car-back
+                show_state: false
+                tap_action: { action: call-service, service: button.press, service_data: { entity_id: button.byd_sealion_7_open_trunk } }
+                styles:
+                  card: [{ height: 86px }, { border-radius: 14px }]
+              - type: custom:button-card
+                entity: button.byd_sealion_7_close_trunk
+                name: Trunk close
+                icon: mdi:car-back
+                show_state: false
+                tap_action: { action: call-service, service: button.press, service_data: { entity_id: button.byd_sealion_7_close_trunk } }
+                styles:
+                  card: [{ height: 86px }, { border-radius: 14px }]
+              - type: custom:button-card
+                entity: lock.byd_sealion_7_lock
+                name: Lock/Unlock
+                icon: mdi:lock
+                tap_action: { action: more-info }
+                styles:
+                  card: [{ height: 86px }, { border-radius: 14px }]
+              - type: custom:button-card
+                entity: button.byd_sealion_7_one_tap_prep
+                name: One-tap prep
+                icon: mdi:car-cog
+                show_state: false
+                tap_action:
+                  action: call-service
+                  service: button.press
+                  service_data: { entity_id: button.byd_sealion_7_one_tap_prep }
+                  confirmation:
+                    text: "Activar pre-condicionamiento one-tap?"
+                styles:
+                  card: [{ height: 86px }, { border-radius: 14px }]
+              - type: custom:button-card
+                entity: button.byd_sealion_7_one_tap_shutdown
+                name: One-tap off
+                icon: mdi:power
+                show_state: false
+                tap_action:
+                  action: call-service
+                  service: button.press
+                  service_data: { entity_id: button.byd_sealion_7_one_tap_shutdown }
+                  confirmation:
+                    text: "Apagar todo (one-tap shutdown)?"
+                styles:
+                  card: [{ height: 86px }, { border-radius: 14px }]
+              - type: custom:button-card
+                entity: button.byd_sealion_7_start_charging
+                name: Start charge
+                icon: mdi:play-circle
+                show_state: false
+                tap_action: { action: call-service, service: button.press, service_data: { entity_id: button.byd_sealion_7_start_charging } }
+                styles:
+                  card: [{ height: 86px }, { border-radius: 14px }]
+                  icon: [{ color: var(--success-color) }]
+
+      # Map
+      - type: grid
+        column_span: 2
+        cards:
+          - type: heading
+            heading: Location
+            icon: mdi:map-marker
+          - type: map
+            entities:
+              - device_tracker.byd_sealion_7_location
+            default_zoom: 14
+            hours_to_show: 24
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # 2) DOORS / WINDOWS / TIRES
+  # ─────────────────────────────────────────────────────────────────────────
+  - title: Estado
+    path: estado
+    icon: mdi:car-door
+    type: sections
+    max_columns: 3
+    sections:
+
+      - type: grid
+        cards:
+          - type: heading
+            heading: Doors
+            icon: mdi:car-door
+          - type: custom:mushroom-template-card
+            primary: Front Left
+            icon: mdi:car-door
+            entity: binary_sensor.byd_sealion_7_front_left_door
+            icon_color: "{{ 'red' if is_state('binary_sensor.byd_sealion_7_front_left_door','on') else 'grey' }}"
+            secondary: "{{ 'open' if is_state('binary_sensor.byd_sealion_7_front_left_door','on') else 'closed' }} · {{ 'unlocked' if is_state('binary_sensor.byd_sealion_7_front_left_door_lock','on') else 'locked' }}"
+          - type: custom:mushroom-template-card
+            primary: Front Right
+            icon: mdi:car-door
+            entity: binary_sensor.byd_sealion_7_front_right_door
+            icon_color: "{{ 'red' if is_state('binary_sensor.byd_sealion_7_front_right_door','on') else 'grey' }}"
+            secondary: "{{ 'open' if is_state('binary_sensor.byd_sealion_7_front_right_door','on') else 'closed' }} · {{ 'unlocked' if is_state('binary_sensor.byd_sealion_7_front_right_door_lock','on') else 'locked' }}"
+          - type: custom:mushroom-template-card
+            primary: Rear Left
+            icon: mdi:car-door
+            entity: binary_sensor.byd_sealion_7_rear_left_door
+            icon_color: "{{ 'red' if is_state('binary_sensor.byd_sealion_7_rear_left_door','on') else 'grey' }}"
+            secondary: "{{ 'open' if is_state('binary_sensor.byd_sealion_7_rear_left_door','on') else 'closed' }} · {{ 'unlocked' if is_state('binary_sensor.byd_sealion_7_rear_left_door_lock','on') else 'locked' }}"
+          - type: custom:mushroom-template-card
+            primary: Rear Right
+            icon: mdi:car-door
+            entity: binary_sensor.byd_sealion_7_rear_right_door
+            icon_color: "{{ 'red' if is_state('binary_sensor.byd_sealion_7_rear_right_door','on') else 'grey' }}"
+            secondary: "{{ 'open' if is_state('binary_sensor.byd_sealion_7_rear_right_door','on') else 'closed' }} · {{ 'unlocked' if is_state('binary_sensor.byd_sealion_7_rear_right_door_lock','on') else 'locked' }}"
+          - type: custom:mushroom-template-card
+            primary: Trunk
+            icon: mdi:car-back
+            entity: binary_sensor.byd_sealion_7_trunk
+            icon_color: "{{ 'red' if is_state('binary_sensor.byd_sealion_7_trunk','on') else 'grey' }}"
+          - type: custom:mushroom-template-card
+            primary: Frunk
+            icon: mdi:car-back
+            entity: binary_sensor.byd_sealion_7_frunk
+            icon_color: "{{ 'red' if is_state('binary_sensor.byd_sealion_7_frunk','on') else 'grey' }}"
+
+      - type: grid
+        cards:
+          - type: heading
+            heading: Windows
+            icon: mdi:car-door
+          - type: custom:mushroom-template-card
+            primary: FL window
+            entity: binary_sensor.byd_sealion_7_front_left_window
+            icon: mdi:car-door
+            icon_color: "{{ 'red' if is_state('binary_sensor.byd_sealion_7_front_left_window','on') else 'grey' }}"
+          - type: custom:mushroom-template-card
+            primary: FR window
+            entity: binary_sensor.byd_sealion_7_front_right_window
+            icon: mdi:car-door
+            icon_color: "{{ 'red' if is_state('binary_sensor.byd_sealion_7_front_right_window','on') else 'grey' }}"
+          - type: custom:mushroom-template-card
+            primary: RL window
+            entity: binary_sensor.byd_sealion_7_rear_left_window
+            icon: mdi:car-door
+            icon_color: "{{ 'red' if is_state('binary_sensor.byd_sealion_7_rear_left_window','on') else 'grey' }}"
+          - type: custom:mushroom-template-card
+            primary: RR window
+            entity: binary_sensor.byd_sealion_7_rear_right_window
+            icon: mdi:car-door
+            icon_color: "{{ 'red' if is_state('binary_sensor.byd_sealion_7_rear_right_window','on') else 'grey' }}"
+          - type: custom:mushroom-template-card
+            primary: Skylight
+            entity: binary_sensor.byd_sealion_7_skylight
+            icon: mdi:car-convertible
+            icon_color: "{{ 'red' if is_state('binary_sensor.byd_sealion_7_skylight','on') else 'grey' }}"
+          - type: custom:mushroom-template-card
+            primary: Sliding door
+            entity: binary_sensor.byd_sealion_7_sliding_door
+            icon: mdi:car-door
+            icon_color: "{{ 'red' if is_state('binary_sensor.byd_sealion_7_sliding_door','on') else 'grey' }}"
+
+      - type: grid
+        cards:
+          - type: heading
+            heading: Tires (psi-like, °)
+            icon: mdi:tire
+          - type: custom:mini-graph-card
+            name: Front Left
+            entities: [sensor.byd_sealion_7_front_left_tire_pressure]
+            hours_to_show: 72
+            line_width: 2
+          - type: custom:mini-graph-card
+            name: Front Right
+            entities: [sensor.byd_sealion_7_front_right_tire_pressure]
+            hours_to_show: 72
+            line_width: 2
+          - type: custom:mini-graph-card
+            name: Rear Left
+            entities: [sensor.byd_sealion_7_rear_left_tire_pressure]
+            hours_to_show: 72
+            line_width: 2
+          - type: custom:mini-graph-card
+            name: Rear Right
+            entities: [sensor.byd_sealion_7_rear_right_tire_pressure]
+            hours_to_show: 72
+            line_width: 2
+          - type: entities
+            entities:
+              - entity: binary_sensor.byd_sealion_7_tpms_state
+                name: TPMS state
+              - entity: binary_sensor.byd_sealion_7_rapid_tire_leak
+                name: Rapid leak
+              - entity: binary_sensor.byd_sealion_7_front_left_tire_status
+                name: FL status
+              - entity: binary_sensor.byd_sealion_7_front_right_tire_status
+                name: FR status
+              - entity: binary_sensor.byd_sealion_7_rear_left_tire_status
+                name: RL status
+              - entity: binary_sensor.byd_sealion_7_rear_right_tire_status
+                name: RR status
+
+      - type: grid
+        column_span: 3
+        cards:
+          - type: heading
+            heading: Warnings
+            icon: mdi:alert
+          - type: entities
+            show_header_toggle: false
+            entities:
+              - binary_sensor.byd_sealion_7_abs_warning
+              - binary_sensor.byd_sealion_7_airbag_warning
+              - binary_sensor.byd_sealion_7_braking_system
+              - binary_sensor.byd_sealion_7_charging_system
+              - binary_sensor.byd_sealion_7_coolant_temperature_warning
+              - binary_sensor.byd_sealion_7_electric_power_steering
+              - binary_sensor.byd_sealion_7_electronic_stability
+              - binary_sensor.byd_sealion_7_power_system
+              - binary_sensor.byd_sealion_7_service_vehicle_soon
+              - binary_sensor.byd_sealion_7_steering_system
+              - sensor.byd_sealion_7_power_warning
+              - sensor.byd_sealion_7_ok_light
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # 3) ENERGY
+  # ─────────────────────────────────────────────────────────────────────────
+  - title: Energía
+    path: energia
+    icon: mdi:lightning-bolt
+    type: sections
+    max_columns: 3
+    sections:
+
+      - type: grid
+        column_span: 3
+        cards:
+          - type: heading
+            heading: Consumos
+            icon: mdi:flash
+          - type: glance
+            entities:
+              - entity: sensor.byd_sealion_7_today_s_energy_consumption
+                name: Hoy
+              - entity: sensor.byd_sealion_7_recent_energy_consumption
+                name: Reciente
+              - entity: sensor.byd_sealion_7_recent_50km_energy
+                name: 50 km
+              - entity: sensor.byd_sealion_7_last_50km_average_ev_consumption
+                name: Media 50 km
+              - entity: sensor.byd_sealion_7_lifetime_average_ev_consumption
+                name: Media histórica
+              - entity: sensor.byd_sealion_7_total_consumption
+                name: Total
+              - entity: sensor.byd_sealion_7_monthly_charged_bat_sl7
+                name: Mensual cargado
+              - entity: sensor.byd_sealion_7_real_bat_charged_sl7
+                name: Real cargado
+
+          - type: custom:mini-graph-card
+            name: Battery (semana)
+            entities: [sensor.byd_sealion_7_battery_level]
+            hours_to_show: 168
+            points_per_hour: 1
+            aggregate_func: avg
+            line_width: 2
+            show: { labels: true, fill: fade }
+
+          - type: custom:mini-graph-card
+            name: Range (semana)
+            entities: [sensor.byd_sealion_7_range]
+            hours_to_show: 168
+            points_per_hour: 1
+            aggregate_func: avg
+            line_width: 2
+            show: { labels: true, fill: fade }
+
+          - type: custom:mini-graph-card
+            name: Odómetro
+            entities: [sensor.byd_sealion_7_odometer]
+            hours_to_show: 720
+            points_per_hour: 0.5
+            aggregate_func: max
+            line_width: 2
+            show: { labels: true }
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # 4) DIAGNOSTICS
+  # ─────────────────────────────────────────────────────────────────────────
+  - title: Diagnóstico
+    path: diagnostico
+    icon: mdi:stethoscope
+    type: sections
+    max_columns: 2
+    sections:
+
+      - type: grid
+        cards:
+          - type: heading
+            heading: Pool & conexión
+            icon: mdi:cloud-sync
+          - type: entities
+            state_color: true
+            entities:
+              - entity: binary_sensor.byd_sealion_7_online
+                name: Online
+              - entity: sensor.byd_sealion_7_effective_poll_interval
+                name: Effective poll
+              - entity: number.byd_sealion_7_realtime_poll_interval
+                name: Base poll (realtime)
+              - entity: number.byd_sealion_7_gps_poll_interval
+                name: Base poll (GPS)
+              - entity: switch.byd_sealion_7_disable_polling
+                name: Disable polling
+              - entity: sensor.byd_sealion_7_last_mqtt_push_at
+                name: Last MQTT push
+              - entity: sensor.byd_sealion_7_telemetry_last_updated
+                name: Telemetry updated
+              - entity: sensor.byd_sealion_7_gps_last_updated
+                name: GPS updated
+              - entity: button.byd_sealion_7_force_poll
+                name: Force poll now
+              - entity: button.byd_sealion_7_fetch_energy_data
+                name: Fetch energy now
+
+      - type: grid
+        cards:
+          - type: heading
+            heading: Firmware & OTA
+            icon: mdi:chip
+          - type: entities
+            entities:
+              - entity: sensor.byd_sealion_7_t_box_version
+                name: T-Box
+              - entity: sensor.byd_sealion_7_ota_upgrade_status
+                name: OTA status
+              - entity: binary_sensor.byd_sealion_7_ota_upgrade_status
+                name: OTA available
+              - entity: update.byd_vehicle_update
+                name: Integration update
+              - entity: update.byd_vehicle_update_2
+                name: Integration update 2
+
+      - type: grid
+        column_span: 2
+        cards:
+          - type: heading
+            heading: Otros sensores
+            icon: mdi:format-list-bulleted
+          - type: entities
+            entities:
+              - sensor.byd_sealion_7_charge_wait_status
+              - binary_sensor.byd_sealion_7_battery_heating
+              - binary_sensor.byd_sealion_7_sentry_mode
+              - binary_sensor.byd_sealion_7_less_one_min
+              - binary_sensor.byd_sealion_7_connectivity
+              - sensor.byd_sealion_7_power_battery_level
+              - sensor.byd_sealion_7_engine_status
+              - sensor.byd_sealion_7_today_s_model_average_consumption
+              - sensor.byd_sealion_7_total_consumption_en
+              - sensor.byd_sealion_7_last_50km_ev_consumption

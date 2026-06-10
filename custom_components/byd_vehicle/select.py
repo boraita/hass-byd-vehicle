@@ -8,16 +8,16 @@ from typing import Any
 
 from homeassistant.components.select import SelectEntity, SelectEntityDescription
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.core import HomeAssistant
+from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers import entity_registry as er
-from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 from pybyd._capabilities.seat import SeatLevel, SeatPosition
 from pybyd.models.realtime import SeatHeatVentState
 from pybyd.models.vehicle import Vehicle
 
 from .const import DOMAIN
 from .coordinator import BydDataUpdateCoordinator
-from .entity import BydActionEntity
+from .entity import BydActionEntity, BydVehicleEntity
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -30,6 +30,31 @@ _OPTION_TO_LEVEL: dict[str, SeatLevel] = {
     "low": SeatLevel.LOW,
     "high": SeatLevel.HIGH,
 }
+
+# --- Charge-schedule repeat (charge_way) ---
+# Wire format: "s" = single (one-shot), "e" = every day, comma-separated
+# weekday indices (0=Mon) = those days. We expose the three common modes;
+# the merge in the coordinator consumes the value under the "pattern" key.
+CHARGE_REPEAT_OPTIONS = ["once", "daily", "weekdays"]
+_OPTION_TO_CHARGE_WAY: dict[str, str] = {
+    "once": "s",
+    "daily": "e",
+    "weekdays": "0,1,2,3,4",
+}
+
+
+def _charge_way_to_option(charge_way: Any) -> str | None:
+    """Map a raw ``charge_way`` string to a repeat option label."""
+    if charge_way is None:
+        return None
+    cw = str(charge_way).strip().lower()
+    if cw == "s":
+        return "once"
+    if cw == "e":
+        return "daily"
+    if "," in cw or cw.isdigit():
+        return "weekdays"  # any explicit weekday set
+    return None
 
 
 def _seat_status_to_option(value: Any) -> str | None:
@@ -163,7 +188,7 @@ _LEGACY_SELECT_UNIQUE_ID_REMOVALS: frozenset[str] = frozenset(
 async def async_setup_entry(
     hass: HomeAssistant,
     entry: ConfigEntry,
-    async_add_entities: AddEntitiesCallback,
+    async_add_entities: AddConfigEntryEntitiesCallback,
 ) -> None:
     """Set up BYD seat climate select entities from a config entry."""
     data = hass.data[DOMAIN][entry.entry_id]
@@ -195,6 +220,9 @@ async def async_setup_entry(
             entities.append(
                 BydSeatClimateSelect(coordinator, vin, vehicle, description)
             )
+        # Charge-schedule repeat selector (created unconditionally, like the
+        # start/end time entities in time.py).
+        entities.append(BydChargeRepeatSelect(coordinator, vin, vehicle))
 
     async_add_entities(entities)
 
@@ -275,3 +303,59 @@ class BydSeatClimateSelect(BydActionEntity, SelectEntity):
                 car.seat.ventilation(desc.seat_position, level),
                 command=f"seat_climate_{desc.key}",
             )
+
+
+class BydChargeRepeatSelect(BydVehicleEntity, SelectEntity):
+    """Editable repeat mode for the smart-charging schedule (charge_way).
+
+    Reads the current repeat from ``charging_schedule.charge.charge_way`` and
+    writes a new one through the coordinator's debounced schedule save (under
+    the ``"pattern"`` key, which the merge maps to ``charge_way``). Companion
+    to the start/end ``time`` entities — created unconditionally.
+    """
+
+    _attr_has_entity_name = True
+    _attr_translation_key = "scheduled_charge_repeat"
+    _attr_icon = "mdi:calendar-refresh"
+    _attr_options = CHARGE_REPEAT_OPTIONS
+
+    def __init__(
+        self,
+        coordinator: BydDataUpdateCoordinator,
+        vin: str,
+        vehicle: Vehicle,
+    ) -> None:
+        super().__init__(coordinator)
+        self._vin = vin
+        self._vehicle = vehicle
+        self._attr_unique_id = f"{vin}_select_scheduled_charge_repeat"
+        self._optimistic: str | None = None
+
+    def _charge(self) -> Any:
+        if self.coordinator.data and self.coordinator.data.charging_schedule:
+            return self.coordinator.data.charging_schedule.charge
+        return None
+
+    @property
+    def current_option(self) -> str | None:
+        """Return the current repeat option derived from charge_way."""
+        if self._optimistic is not None:
+            return self._optimistic
+        charge = self._charge()
+        if charge is None:
+            return None
+        return _charge_way_to_option(getattr(charge, "charge_way", None))
+
+    @callback
+    def _handle_coordinator_update(self) -> None:
+        self._optimistic = None
+        super()._handle_coordinator_update()
+
+    async def async_select_option(self, option: str) -> None:
+        """Set the charge repeat mode via the debounced schedule save."""
+        charge_way = _OPTION_TO_CHARGE_WAY.get(option)
+        if charge_way is None:
+            return
+        self._optimistic = option
+        self.async_write_ha_state()
+        await self.coordinator.async_request_schedule_update("pattern", charge_way)
