@@ -13,6 +13,7 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import CALLBACK_TYPE, HomeAssistant, callback
 from homeassistant.exceptions import ConfigEntryAuthFailed, HomeAssistantError
 from homeassistant.helpers.event import async_call_later
+from homeassistant.helpers.storage import Store
 from homeassistant.helpers.update_coordinator import (
     DataUpdateCoordinator,
     UpdateFailed,
@@ -34,6 +35,7 @@ from pybyd import (
     VehicleSnapshot,
 )
 from pybyd.config import BydConfig, DeviceProfile
+from pybyd.models.realtime import PowerGear
 from pybyd.models.vehicle import Vehicle
 
 from .const import (
@@ -51,6 +53,12 @@ from .const import (
 _LOGGER = logging.getLogger(__name__)
 
 _HA_EVENT_COMMAND_LIFECYCLE: str = f"{DOMAIN}_command_lifecycle"
+_HA_EVENT_POWER_CHANGED: str = f"{DOMAIN}_power_changed"
+
+# Trip snapshots persist across HA restarts so a restart mid-trip does
+# not lose the power-on baseline (SoC/odometer at trip start).
+_TRIP_STORE_VERSION = 1
+_TRIP_STORE_SAVE_DELAY_SECONDS = 2.0
 
 # Battery capacity defaults to Sealion 7 Comfort nameplate (82.5 kWh).
 # Wrong for other trims/models; swap when pyBYD exposes per-model capacity.
@@ -501,6 +509,13 @@ class BydDataUpdateCoordinator(DataUpdateCoordinator[VehicleSnapshot]):
         # the rest of the energy entities working.
         self._energy_distribution_supported: bool | None = None
         self._cancel_hvac_final_retry: CALLBACK_TYPE | None = None
+        # Trip tracking: snapshot taken when the car powers ON, persisted
+        # so deltas (distance, SoC used) survive HA restarts mid-trip.
+        self._trip_store: Store[dict[str, Any]] = Store(
+            hass, _TRIP_STORE_VERSION, f"{DOMAIN}.trip_{vin}"
+        )
+        self._trip_store_loaded = False
+        self._trip_data: dict[str, Any] = {}
 
     # ------------------------------------------------------------------
     # State-engine push
@@ -801,6 +816,9 @@ class BydDataUpdateCoordinator(DataUpdateCoordinator[VehicleSnapshot]):
     async def _async_update_data(self) -> VehicleSnapshot:
         """Fetch telemetry + conditional HVAC and return car.state."""
         _LOGGER.debug("Telemetry refresh started: vin=%s", self._vin[-6:])
+        if not self._trip_store_loaded:
+            self._trip_store_loaded = True
+            self._trip_data = await self._trip_store.async_load() or {}
         force = self._force_next_refresh
         self._force_next_refresh = False
         previous_snapshot = self.data
@@ -1123,7 +1141,139 @@ class BydDataUpdateCoordinator(DataUpdateCoordinator[VehicleSnapshot]):
             )
             self.hass.async_create_task(self._async_post_plug_refresh())
 
+        def _power_on(snap: VehicleSnapshot | None) -> bool | None:
+            if snap is None or snap.realtime is None:
+                return None
+            gear = getattr(snap.realtime, "power_gear", None)
+            if gear == PowerGear.ON:
+                return True
+            if gear == PowerGear.OFF:
+                return False
+            return None  # missing / UNKNOWN / sentinel payload
+
+        prev_power = _power_on(previous)
+        new_power = _power_on(current)
+        if prev_power is not None and new_power is not None and prev_power != new_power:
+            self._handle_power_transition(is_on=new_power, snapshot=current)
+
         self._maybe_fire_capability_changes(previous, current)
+
+    @callback
+    def _handle_power_transition(
+        self,
+        *,
+        is_on: bool,
+        snapshot: VehicleSnapshot,
+    ) -> None:
+        """Fire :event:`byd_vehicle_power_changed` and maintain trip state.
+
+        On OFF→ON: capture a trip-start baseline (SoC, odometer, position)
+        and persist it.  On ON→OFF: build a trip summary (distance, SoC
+        used, duration) against that baseline.  Both directions fire the
+        event so automations get the fastest available power signal
+        (MQTT push when the car is online, next poll otherwise).
+        """
+        now = datetime.now(tz=UTC)
+        soc: Any = None
+        odometer: Any = None
+        if snapshot.charging is not None:
+            soc = getattr(snapshot.charging, "soc", None)
+        if snapshot.realtime is not None:
+            odometer = getattr(snapshot.realtime, "total_mileage", None)
+            if soc is None:
+                soc = getattr(snapshot.realtime, "elec_percent", None)
+        latitude: Any = None
+        longitude: Any = None
+        if snapshot.gps is not None:
+            latitude = getattr(snapshot.gps, "latitude", None)
+            longitude = getattr(snapshot.gps, "longitude", None)
+
+        payload: dict[str, Any] = {
+            "vin": self._vin,
+            "state": "on" if is_on else "off",
+            "timestamp": now.isoformat(),
+        }
+
+        if is_on:
+            trip_start: dict[str, Any] = {
+                "started_at": now.isoformat(),
+                "odometer": odometer,
+                "soc": soc,
+                "latitude": latitude,
+                "longitude": longitude,
+            }
+            self._trip_data["trip_start"] = trip_start
+            payload["trip_start"] = trip_start
+            _LOGGER.info(
+                "Vehicle powered ON: vin=%s soc=%s odometer=%s",
+                self._vin[-6:],
+                soc,
+                odometer,
+            )
+        else:
+            trip = self._build_trip_summary(
+                ended_at=now,
+                end_odometer=odometer,
+                end_soc=soc,
+            )
+            if trip is not None:
+                self._trip_data["last_trip"] = trip
+                payload["trip"] = trip
+            _LOGGER.info(
+                "Vehicle powered OFF: vin=%s trip=%s",
+                self._vin[-6:],
+                trip,
+            )
+
+        if self._trip_store_loaded:
+            self._trip_store.async_delay_save(
+                lambda: dict(self._trip_data),
+                _TRIP_STORE_SAVE_DELAY_SECONDS,
+            )
+        self.hass.bus.async_fire(_HA_EVENT_POWER_CHANGED, payload)
+
+    def _build_trip_summary(
+        self,
+        *,
+        ended_at: datetime,
+        end_odometer: Any,
+        end_soc: Any,
+    ) -> dict[str, Any] | None:
+        """Build a trip summary from the persisted trip-start baseline."""
+        trip_start = self._trip_data.get("trip_start")
+        if not isinstance(trip_start, dict):
+            return None
+        summary: dict[str, Any] = {
+            "started_at": trip_start.get("started_at"),
+            "ended_at": ended_at.isoformat(),
+            "start_odometer": trip_start.get("odometer"),
+            "end_odometer": end_odometer,
+            "start_soc": trip_start.get("soc"),
+            "end_soc": end_soc,
+            "start_latitude": trip_start.get("latitude"),
+            "start_longitude": trip_start.get("longitude"),
+        }
+        try:
+            started = datetime.fromisoformat(str(trip_start.get("started_at")))
+            duration = (ended_at - started).total_seconds() / 60.0
+            summary["duration_minutes"] = round(duration, 1)
+        except (TypeError, ValueError):
+            summary["duration_minutes"] = None
+        start_odo = trip_start.get("odometer")
+        if (
+            isinstance(start_odo, (int, float))
+            and isinstance(end_odometer, (int, float))
+            and end_odometer >= start_odo
+        ):
+            summary["distance_km"] = round(float(end_odometer) - float(start_odo), 1)
+        else:
+            summary["distance_km"] = None
+        start_soc = trip_start.get("soc")
+        if isinstance(start_soc, (int, float)) and isinstance(end_soc, (int, float)):
+            summary["soc_used"] = round(float(start_soc) - float(end_soc), 1)
+        else:
+            summary["soc_used"] = None
+        return summary
 
     def _maybe_fire_capability_changes(
         self,
@@ -1267,6 +1417,58 @@ class BydDataUpdateCoordinator(DataUpdateCoordinator[VehicleSnapshot]):
             if connect_state == 0:
                 self._charge_session_started_at = None
                 self._charge_session_start_soc = None
+
+    @property
+    def trip_started_at(self) -> datetime | None:
+        """UTC timestamp of the latest power-ON transition (trip start)."""
+        trip_start = self._trip_data.get("trip_start")
+        if not isinstance(trip_start, dict):
+            return None
+        try:
+            return datetime.fromisoformat(str(trip_start.get("started_at")))
+        except (TypeError, ValueError):
+            return None
+
+    @property
+    def trip_start_soc(self) -> float | None:
+        """Battery SoC captured when the car last powered ON."""
+        trip_start = self._trip_data.get("trip_start")
+        if isinstance(trip_start, dict):
+            soc = trip_start.get("soc")
+            if isinstance(soc, (int, float)):
+                return float(soc)
+        return None
+
+    @property
+    def trip_start_odometer(self) -> float | None:
+        """Odometer captured when the car last powered ON."""
+        trip_start = self._trip_data.get("trip_start")
+        if isinstance(trip_start, dict):
+            odo = trip_start.get("odometer")
+            if isinstance(odo, (int, float)):
+                return float(odo)
+        return None
+
+    @property
+    def trip_distance_km(self) -> float | None:
+        """Distance driven since the car last powered ON.
+
+        Live while driving (current odometer minus trip-start odometer);
+        after power-off it naturally freezes at the trip total.
+        """
+        start = self.trip_start_odometer
+        if start is None or self.data is None or self.data.realtime is None:
+            return None
+        current = getattr(self.data.realtime, "total_mileage", None)
+        if not isinstance(current, (int, float)) or current < start:
+            return None
+        return round(float(current) - start, 1)
+
+    @property
+    def last_trip(self) -> dict[str, Any] | None:
+        """Summary of the most recently completed trip (power ON→OFF)."""
+        trip = self._trip_data.get("last_trip")
+        return trip if isinstance(trip, dict) else None
 
     @property
     def charge_session_started_at(self) -> datetime | None:
