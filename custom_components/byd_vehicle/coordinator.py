@@ -666,7 +666,10 @@ class BydDataUpdateCoordinator(DataUpdateCoordinator[VehicleSnapshot]):
         )
 
     async def async_force_poll_now(self) -> None:
-        """Force a fresh fetch of realtime + charging + GPS in sequence.
+        """Force a fresh fetch of realtime + charging in sequence.
+
+        GPS lives on ``BydGpsUpdateCoordinator``; the ``force_poll_now``
+        service handler triggers it separately.
 
         Intended for use immediately after an external state change
         (plug-in, key fob press, etc.) when waiting for the next scheduled

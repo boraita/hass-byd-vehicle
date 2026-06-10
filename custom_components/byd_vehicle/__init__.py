@@ -543,8 +543,10 @@ def _async_register_services(hass: HomeAssistant) -> None:
 
     async def _handle_force_poll(call: ServiceCall) -> None:
         for entry_id, vin in _resolve_vins_from_call(hass, call):
-            coordinator, _ = _get_coordinators(hass, entry_id, vin)
+            coordinator, gps = _get_coordinators(hass, entry_id, vin)
             await coordinator.async_force_poll_now()
+            if gps is not None:
+                await gps.async_fetch_gps()
 
     async def _handle_schedule_climate(call: ServiceCall) -> None:
         temperature = float(call.data.get("temperature", 21.0))
