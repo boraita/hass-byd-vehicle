@@ -3,12 +3,16 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Awaitable, Callable
+from datetime import datetime
 from typing import Any
 
+import voluptuous as vol
 from homeassistant.components import persistent_notification
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, ServiceCall
 from homeassistant.exceptions import ConfigEntryNotReady, HomeAssistantError
+from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from pybyd import BydClient
@@ -397,59 +401,54 @@ _ALL_SERVICES = (
     _SERVICE_SCHEDULE_CLIMATE,
 )
 
+# Schemas validate service input up front so handlers can assume shape:
+# device_id is always a list[str], times are datetime.time, repeat is a
+# known token.  Bad input surfaces as a proper validation error instead
+# of a stray ValueError mid-handler.
+_SERVICE_BASE_SCHEMA = vol.Schema(
+    {vol.Required("device_id"): vol.All(cv.ensure_list, [cv.string])}
+)
 
-def _normalise_hhmm(value: Any, *, field: str) -> str:
-    """Coerce a service-call time input to a ``"HH:MM"`` string.
+_SERVICE_SCHEDULE_CLIMATE_SCHEMA = _SERVICE_BASE_SCHEMA.extend(
+    {
+        vol.Optional("temperature", default=21.0): vol.All(
+            vol.Coerce(float), vol.Range(min=16, max=30)
+        ),
+        vol.Optional("duration", default=20): vol.All(
+            vol.Coerce(int), vol.Range(min=5, max=60)
+        ),
+        vol.Optional("booking_time"): cv.datetime,
+    }
+)
 
-    HA's ``time`` selector hands us ``datetime.time`` instances, but
-    YAML / template-rendered calls may also pass plain strings.  We
-    accept both and reject anything else with a clear error.
-    """
-    from datetime import time as _time
-
-    if isinstance(value, _time):
-        return value.strftime("%H:%M")
-    if isinstance(value, str):
-        text = value.strip()
-        # Accept ``"HH:MM"`` and ``"HH:MM:SS"``; ignore seconds either way.
-        parts = text.split(":")
-        if 2 <= len(parts) <= 3:
-            try:
-                hour = int(parts[0])
-                minute = int(parts[1])
-            except ValueError as exc:
-                raise HomeAssistantError(
-                    f"{field} must be an HH:MM time, got {value!r}"
-                ) from exc
-            if 0 <= hour <= 23 and 0 <= minute <= 59:
-                return f"{hour:02d}:{minute:02d}"
-    raise HomeAssistantError(f"{field} must be an HH:MM time, got {value!r}")
+_SERVICE_SAVE_CHARGING_SCHEDULE_SCHEMA = _SERVICE_BASE_SCHEMA.extend(
+    {
+        vol.Required("start_time"): cv.time,
+        vol.Optional("end_time"): cv.time,
+        vol.Optional("until_full", default=True): cv.boolean,
+        vol.Optional("repeat", default="every_day"): vol.In(
+            (*_REPEAT_TO_CHARGE_WAY, "custom")
+        ),
+        vol.Optional("weekdays"): vol.All(cv.ensure_list, [vol.In(_WEEKDAY_INDEX)]),
+        vol.Optional("enabled", default=True): cv.boolean,
+    }
+)
 
 
 def _resolve_charge_way(call: ServiceCall) -> str:
-    """Map service-call ``repeat`` (+ optional ``weekdays``) to ``chargeWay``."""
-    repeat = (call.data.get("repeat") or "every_day").strip()
+    """Map service-call ``repeat`` (+ optional ``weekdays``) to ``chargeWay``.
+
+    The schema already guarantees ``repeat`` and ``weekdays`` hold known
+    tokens; only the custom-without-weekdays combination needs a check.
+    """
+    repeat: str = call.data["repeat"]
     if repeat == "custom":
-        weekdays = call.data.get("weekdays") or []
-        if isinstance(weekdays, str):
-            weekdays = [weekdays]
+        weekdays: list[str] = call.data.get("weekdays") or []
         if not weekdays:
             raise HomeAssistantError("weekdays must be set when repeat='custom'")
-        try:
-            indices = sorted({_WEEKDAY_INDEX[d] for d in weekdays})
-        except KeyError as exc:
-            raise HomeAssistantError(
-                f"unknown weekday token: {exc.args[0]!r} "
-                f"(expected one of {sorted(_WEEKDAY_INDEX)})"
-            ) from exc
+        indices = sorted({_WEEKDAY_INDEX[d] for d in weekdays})
         return ",".join(str(i) for i in indices)
-    try:
-        return _REPEAT_TO_CHARGE_WAY[repeat]
-    except KeyError as exc:
-        raise HomeAssistantError(
-            f"unknown repeat mode: {repeat!r} "
-            f"(expected one of {sorted(_REPEAT_TO_CHARGE_WAY)} or 'custom')"
-        ) from exc
+    return _REPEAT_TO_CHARGE_WAY[repeat]
 
 
 def _resolve_vins_from_call(
@@ -460,9 +459,7 @@ def _resolve_vins_from_call(
 
     Raises ``HomeAssistantError`` when no valid targets can be resolved.
     """
-    device_ids: list[str] = call.data.get("device_id", [])
-    if isinstance(device_ids, str):
-        device_ids = [device_ids]
+    device_ids: list[str] = call.data["device_id"]
 
     dev_reg = dr.async_get(hass)
     results: list[tuple[str, str]] = []
@@ -506,59 +503,45 @@ def _async_register_services(hass: HomeAssistant) -> None:
     if hass.services.has_service(DOMAIN, _SERVICE_FETCH_REALTIME):
         return  # Already registered.
 
-    async def _handle_fetch_realtime(call: ServiceCall) -> None:
-        for entry_id, vin in _resolve_vins_from_call(hass, call):
-            coordinator, _ = _get_coordinators(hass, entry_id, vin)
-            await coordinator.async_fetch_realtime()
+    def _per_vehicle(
+        action: Callable[
+            [BydDataUpdateCoordinator, BydGpsUpdateCoordinator | None],
+            Awaitable[Any],
+        ],
+    ) -> Callable[[ServiceCall], Awaitable[None]]:
+        """Build a handler that runs *action* for every targeted vehicle."""
 
-    async def _handle_fetch_gps(call: ServiceCall) -> None:
-        for entry_id, vin in _resolve_vins_from_call(hass, call):
-            _, gps = _get_coordinators(hass, entry_id, vin)
-            if gps is not None:
-                await gps.async_fetch_gps()
+        async def _handler(call: ServiceCall) -> None:
+            for entry_id, vin in _resolve_vins_from_call(hass, call):
+                telemetry, gps = _get_coordinators(hass, entry_id, vin)
+                await action(telemetry, gps)
 
-    async def _handle_fetch_hvac(call: ServiceCall) -> None:
-        for entry_id, vin in _resolve_vins_from_call(hass, call):
-            coordinator, _ = _get_coordinators(hass, entry_id, vin)
-            await coordinator.async_fetch_hvac()
+        return _handler
 
-    async def _handle_fetch_charging(call: ServiceCall) -> None:
-        for entry_id, vin in _resolve_vins_from_call(hass, call):
-            coordinator, _ = _get_coordinators(hass, entry_id, vin)
-            await coordinator.async_fetch_charging()
+    async def _do_fetch_gps(
+        _telemetry: BydDataUpdateCoordinator,
+        gps: BydGpsUpdateCoordinator | None,
+    ) -> None:
+        if gps is not None:
+            await gps.async_fetch_gps()
 
-    async def _handle_fetch_energy(call: ServiceCall) -> None:
-        for entry_id, vin in _resolve_vins_from_call(hass, call):
-            coordinator, _ = _get_coordinators(hass, entry_id, vin)
-            await coordinator.async_fetch_energy()
-
-    async def _handle_start_charging(call: ServiceCall) -> None:
-        for entry_id, vin in _resolve_vins_from_call(hass, call):
-            coordinator, _ = _get_coordinators(hass, entry_id, vin)
-            await coordinator.async_start_charging()
-
-    async def _handle_refresh_firmware(call: ServiceCall) -> None:
-        for entry_id, vin in _resolve_vins_from_call(hass, call):
-            coordinator, _ = _get_coordinators(hass, entry_id, vin)
-            await coordinator.async_refresh_firmware_metadata()
-
-    async def _handle_force_poll(call: ServiceCall) -> None:
-        for entry_id, vin in _resolve_vins_from_call(hass, call):
-            coordinator, gps = _get_coordinators(hass, entry_id, vin)
-            await coordinator.async_force_poll_now()
-            if gps is not None:
-                await gps.async_fetch_gps()
+    async def _do_force_poll(
+        telemetry: BydDataUpdateCoordinator,
+        gps: BydGpsUpdateCoordinator | None,
+    ) -> None:
+        await telemetry.async_force_poll_now()
+        if gps is not None:
+            await gps.async_fetch_gps()
 
     async def _handle_schedule_climate(call: ServiceCall) -> None:
-        temperature = float(call.data.get("temperature", 21.0))
-        duration = int(call.data.get("duration", 20))
-        booking_time = call.data.get("booking_time")
+        booking_time: datetime | None = call.data.get("booking_time")
+        booking_time_iso = booking_time.isoformat() if booking_time else None
         for entry_id, vin in _resolve_vins_from_call(hass, call):
-            coordinator, _ = _get_coordinators(hass, entry_id, vin)
-            await coordinator.async_schedule_climate(
-                temperature=temperature,
-                duration=duration,
-                booking_time_iso=booking_time,
+            telemetry, _ = _get_coordinators(hass, entry_id, vin)
+            await telemetry.async_schedule_climate(
+                temperature=call.data["temperature"],
+                duration=call.data["duration"],
+                booking_time_iso=booking_time_iso,
             )
 
     async def _handle_save_charging_schedule(call: ServiceCall) -> None:
@@ -566,57 +549,70 @@ def _async_register_services(hass: HomeAssistant) -> None:
         # the first device only — they're identical for every target.
         targets = _resolve_vins_from_call(hass, call)
 
-        until_full = bool(call.data.get("until_full", True))
-        start_charge_time = _normalise_hhmm(
-            call.data.get("start_time"), field="start_time"
-        )
-        if until_full:
+        start_charge_time = call.data["start_time"].strftime("%H:%M")
+        if call.data["until_full"]:
             end_charge_time = "full"
         else:
-            raw_end = call.data.get("end_time")
-            if raw_end is None:
+            end_time = call.data.get("end_time")
+            if end_time is None:
                 raise HomeAssistantError(
                     "end_time is required when until_full is false"
                 )
-            end_charge_time = _normalise_hhmm(raw_end, field="end_time")
+            end_charge_time = end_time.strftime("%H:%M")
         charge_way = _resolve_charge_way(call)
-        enabled = bool(call.data.get("enabled", True))
 
         for entry_id, vin in targets:
-            coordinator, _ = _get_coordinators(hass, entry_id, vin)
-            await coordinator.async_save_charging_schedule(
+            telemetry, _ = _get_coordinators(hass, entry_id, vin)
+            await telemetry.async_save_charging_schedule(
                 start_charge_time=start_charge_time,
                 end_charge_time=end_charge_time,
                 charge_way=charge_way,
-                enabled=enabled,
+                enabled=call.data["enabled"],
             )
 
-    hass.services.async_register(
-        DOMAIN, _SERVICE_FETCH_REALTIME, _handle_fetch_realtime
-    )
-    hass.services.async_register(DOMAIN, _SERVICE_FETCH_GPS, _handle_fetch_gps)
-    hass.services.async_register(DOMAIN, _SERVICE_FETCH_HVAC, _handle_fetch_hvac)
-    hass.services.async_register(
-        DOMAIN, _SERVICE_FETCH_CHARGING, _handle_fetch_charging
-    )
-    hass.services.async_register(DOMAIN, _SERVICE_FETCH_ENERGY, _handle_fetch_energy)
-    hass.services.async_register(
-        DOMAIN, _SERVICE_START_CHARGING, _handle_start_charging
-    )
-    hass.services.async_register(
-        DOMAIN,
-        _SERVICE_SAVE_CHARGING_SCHEDULE,
-        _handle_save_charging_schedule,
-    )
-    hass.services.async_register(
-        DOMAIN, _SERVICE_REFRESH_FIRMWARE, _handle_refresh_firmware
-    )
-    hass.services.async_register(DOMAIN, _SERVICE_FORCE_POLL, _handle_force_poll)
-    hass.services.async_register(
-        DOMAIN, _SERVICE_SCHEDULE_CLIMATE, _handle_schedule_climate
-    )
+    # Single source of truth: service name -> (handler, schema).  Order
+    # mirrors _ALL_SERVICES, which _async_unregister_services iterates.
+    services: dict[str, tuple[Callable[[ServiceCall], Awaitable[None]], vol.Schema]] = {
+        _SERVICE_FETCH_REALTIME: (
+            _per_vehicle(lambda t, _g: t.async_fetch_realtime()),
+            _SERVICE_BASE_SCHEMA,
+        ),
+        _SERVICE_FETCH_GPS: (_per_vehicle(_do_fetch_gps), _SERVICE_BASE_SCHEMA),
+        _SERVICE_FETCH_HVAC: (
+            _per_vehicle(lambda t, _g: t.async_fetch_hvac()),
+            _SERVICE_BASE_SCHEMA,
+        ),
+        _SERVICE_FETCH_CHARGING: (
+            _per_vehicle(lambda t, _g: t.async_fetch_charging()),
+            _SERVICE_BASE_SCHEMA,
+        ),
+        _SERVICE_FETCH_ENERGY: (
+            _per_vehicle(lambda t, _g: t.async_fetch_energy()),
+            _SERVICE_BASE_SCHEMA,
+        ),
+        _SERVICE_START_CHARGING: (
+            _per_vehicle(lambda t, _g: t.async_start_charging()),
+            _SERVICE_BASE_SCHEMA,
+        ),
+        _SERVICE_SAVE_CHARGING_SCHEDULE: (
+            _handle_save_charging_schedule,
+            _SERVICE_SAVE_CHARGING_SCHEDULE_SCHEMA,
+        ),
+        _SERVICE_REFRESH_FIRMWARE: (
+            _per_vehicle(lambda t, _g: t.async_refresh_firmware_metadata()),
+            _SERVICE_BASE_SCHEMA,
+        ),
+        _SERVICE_FORCE_POLL: (_per_vehicle(_do_force_poll), _SERVICE_BASE_SCHEMA),
+        _SERVICE_SCHEDULE_CLIMATE: (
+            _handle_schedule_climate,
+            _SERVICE_SCHEDULE_CLIMATE_SCHEMA,
+        ),
+    }
 
-    _LOGGER.debug("Registered %s domain services", len(_ALL_SERVICES))
+    for service, (handler, schema) in services.items():
+        hass.services.async_register(DOMAIN, service, handler, schema=schema)
+
+    _LOGGER.debug("Registered %s domain services", len(services))
 
 
 def _async_unregister_services(hass: HomeAssistant) -> None:
