@@ -83,6 +83,11 @@ class BydApi:
             time_zone=time_zone,
             device=device,
             control_pin=entry.data.get(CONF_CONTROL_PIN) or None,
+            # Default is 10s; with a sleeping car every trigger+poll waits
+            # the full window before the HTTP fallback, so cold-start pays
+            # it twice (realtime + GPS).  5s keeps the fast path for awake
+            # cars and fails over sooner otherwise.
+            mqtt_timeout=5.0,
         )
         self._client: BydClient | None = None
         self._commands_enabled: bool = False
@@ -775,6 +780,16 @@ class BydDataUpdateCoordinator(DataUpdateCoordinator[VehicleSnapshot]):
         if snapshot is not None and snapshot.hvac is None:
             return True
         return self._is_vehicle_on_from_snapshot(snapshot) is True
+
+    async def async_ensure_car(self) -> None:
+        """Bind the BydCar early (capability fetch) outside the refresh path.
+
+        Called by setup before the first refresh so the GPS coordinator,
+        which borrows this coordinator's car, can refresh in parallel
+        instead of silently producing an empty snapshot.
+        """
+        if self._car is None:
+            self._car = await self._api.async_get_car(self._vin, self._vehicle)
 
     async def _async_update_data(self) -> VehicleSnapshot:
         """Fetch telemetry + conditional HVAC and return car.state."""
