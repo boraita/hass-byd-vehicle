@@ -34,12 +34,7 @@ async def async_setup_entry(
         telemetry = coordinators.get(vin)
         if telemetry is None or not telemetry.capability_available("location"):
             continue
-        vehicle = (
-            telemetry.vehicle
-            if telemetry is not None
-            else gps_coordinator._vehicle  # noqa: SLF001
-        )
-        entities.append(BydDeviceTracker(gps_coordinator, vin, vehicle))
+        entities.append(BydDeviceTracker(gps_coordinator, vin, telemetry.vehicle))
 
     async_add_entities(entities)
 
