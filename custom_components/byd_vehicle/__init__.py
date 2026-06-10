@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from collections.abc import Awaitable, Callable
 from datetime import datetime
@@ -271,12 +272,21 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     api.register_coordinators(coordinators, gps_coordinators)
 
     try:
-        _LOGGER.debug("Running first refresh for BYD telemetry coordinators")
+        # Bind BydCar instances up front (capability fetch) so the GPS
+        # coordinators, which borrow the telemetry coordinator's car, can
+        # run their first refresh in parallel with telemetry instead of
+        # racing it.  With a sleeping car each trigger+poll cycle can take
+        # ~25s (MQTT wait + HTTP poll fallback); running telemetry and GPS
+        # concurrently roughly halves worst-case setup time.
+        _LOGGER.debug("Binding BYD car instances before first refresh")
         for coordinator in coordinators.values():
-            await coordinator.async_config_entry_first_refresh()
-        _LOGGER.debug("Running first refresh for BYD GPS coordinators")
-        for gps_coordinator in gps_coordinators.values():
-            await gps_coordinator.async_config_entry_first_refresh()
+            await coordinator.async_ensure_car()
+
+        _LOGGER.debug("Running first refresh for telemetry + GPS in parallel")
+        await asyncio.gather(
+            *(c.async_config_entry_first_refresh() for c in coordinators.values()),
+            *(g.async_config_entry_first_refresh() for g in gps_coordinators.values()),
+        )
     except Exception as exc:  # noqa: BLE001
         raise ConfigEntryNotReady from exc
 
