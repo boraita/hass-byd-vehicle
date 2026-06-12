@@ -9,6 +9,7 @@ from typing import Any
 import voluptuous as vol
 from homeassistant import config_entries
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers import selector
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from pybyd import (
     VALID_CLIMATE_DURATIONS,
@@ -22,6 +23,7 @@ from pybyd.config import BydConfig
 
 from .const import (
     CONF_BASE_URL,
+    CONF_BATTERY_KWH,
     CONF_CLIMATE_DURATION,
     CONF_CONTROL_PIN,
     CONF_COUNTRY_CODE,
@@ -31,12 +33,15 @@ from .const import (
     CONF_LANGUAGE,
     CONF_POLL_INTERVAL,
     COUNTRY_OPTIONS,
+    DEFAULT_BATTERY_KWH,
     DEFAULT_CLIMATE_DURATION,
     DEFAULT_COUNTRY,
     DEFAULT_DEBUG_DUMPS,
     DEFAULT_GPS_POLL_INTERVAL,
     DEFAULT_POLL_INTERVAL,
     DOMAIN,
+    MAX_BATTERY_KWH,
+    MIN_BATTERY_KWH,
     get_country_connection_settings,
 )
 from .device_fingerprint import async_generate_device_profile
@@ -155,6 +160,20 @@ class BydVehicleConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):  # type: i
                     ),
                 ): vol.In(list(_CLIMATE_DURATION_LABELS.values())),
                 vol.Optional(
+                    CONF_BATTERY_KWH,
+                    default=float(
+                        defaults.get(CONF_BATTERY_KWH, DEFAULT_BATTERY_KWH)
+                    ),
+                ): selector.NumberSelector(
+                    selector.NumberSelectorConfig(
+                        min=MIN_BATTERY_KWH,
+                        max=MAX_BATTERY_KWH,
+                        step=0.1,
+                        unit_of_measurement="kWh",
+                        mode=selector.NumberSelectorMode.BOX,
+                    )
+                ),
+                vol.Optional(
                     CONF_DEBUG_DUMPS,
                     default=defaults.get(
                         CONF_DEBUG_DUMPS,
@@ -180,6 +199,10 @@ class BydVehicleConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):  # type: i
             CONF_CLIMATE_DURATION: options.get(
                 CONF_CLIMATE_DURATION,
                 DEFAULT_CLIMATE_DURATION,
+            ),
+            CONF_BATTERY_KWH: options.get(
+                CONF_BATTERY_KWH,
+                DEFAULT_BATTERY_KWH,
             ),
             CONF_DEBUG_DUMPS: options.get(
                 CONF_DEBUG_DUMPS,
@@ -244,6 +267,9 @@ class BydVehicleConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):  # type: i
                         CONF_CLIMATE_DURATION: _climate_duration_label_to_minutes(
                             user_input[CONF_CLIMATE_DURATION]
                         ),
+                        CONF_BATTERY_KWH: user_input.get(
+                            CONF_BATTERY_KWH, DEFAULT_BATTERY_KWH
+                        ),
                         CONF_DEBUG_DUMPS: user_input[CONF_DEBUG_DUMPS],
                     }
 
@@ -275,6 +301,9 @@ class BydVehicleConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):  # type: i
                         CONF_GPS_POLL_INTERVAL: DEFAULT_GPS_POLL_INTERVAL,
                         CONF_CLIMATE_DURATION: _climate_duration_label_to_minutes(
                             user_input[CONF_CLIMATE_DURATION]
+                        ),
+                        CONF_BATTERY_KWH: user_input.get(
+                            CONF_BATTERY_KWH, DEFAULT_BATTERY_KWH
                         ),
                         CONF_DEBUG_DUMPS: user_input[CONF_DEBUG_DUMPS],
                     },
@@ -347,6 +376,9 @@ class BydVehicleConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):  # type: i
                     CONF_CLIMATE_DURATION: _climate_duration_label_to_minutes(
                         user_input[CONF_CLIMATE_DURATION]
                     ),
+                    CONF_BATTERY_KWH: user_input.get(
+                        CONF_BATTERY_KWH, DEFAULT_BATTERY_KWH
+                    ),
                     CONF_DEBUG_DUMPS: user_input[CONF_DEBUG_DUMPS],
                 }
 
@@ -369,6 +401,10 @@ class BydVehicleConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):  # type: i
             CONF_CLIMATE_DURATION: reconfigure_entry.options.get(
                 CONF_CLIMATE_DURATION,
                 DEFAULT_CLIMATE_DURATION,
+            ),
+            CONF_BATTERY_KWH: reconfigure_entry.options.get(
+                CONF_BATTERY_KWH,
+                DEFAULT_BATTERY_KWH,
             ),
             CONF_DEBUG_DUMPS: reconfigure_entry.options.get(
                 CONF_DEBUG_DUMPS,

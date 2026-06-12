@@ -63,6 +63,8 @@ async def async_setup_entry(
         entities.append(BydScheduleEnabledSwitch(coordinator, vin, vehicle))
         entities.append(BydChargeToFullSwitch(coordinator, vin, vehicle))
         entities.append(BydRepeatDailySwitch(coordinator, vin, vehicle))
+        entities.append(BydPushNotificationSwitch(coordinator, vin, vehicle))
+        entities.append(BydSmartChargingSwitch(coordinator, vin, vehicle))
 
     async_add_entities(entities)
 
@@ -428,6 +430,107 @@ class BydChargeToFullSwitch(BydVehicleEntity, SwitchEntity):
         self._optimistic_state = False
         self.async_write_ha_state()
         await self.coordinator.async_request_schedule_update("charge_to_full", False)
+
+
+class BydPushNotificationSwitch(BydVehicleEntity, SwitchEntity):
+    """Toggle BYD cloud push notifications for this vehicle.
+
+    State is read back from ``/.../getPushState`` (cached on the
+    coordinator) since no realtime/homepage payload carries it.
+    """
+
+    _attr_has_entity_name = True
+    _attr_translation_key = "push_notifications"
+    _attr_icon = "mdi:bell"
+    _attr_entity_category = EntityCategory.CONFIG
+
+    def __init__(
+        self,
+        coordinator: BydDataUpdateCoordinator,
+        vin: str,
+        vehicle: Vehicle,
+    ) -> None:
+        super().__init__(coordinator)
+        self._vin = vin
+        self._vehicle = vehicle
+        self._attr_unique_id = f"{vin}_switch_push_notifications"
+
+    async def async_added_to_hass(self) -> None:
+        """Seed the cached push state once the entity is registered."""
+        await super().async_added_to_hass()
+        await self.coordinator.async_refresh_push_state()
+        self.async_write_ha_state()
+
+    @property
+    def is_on(self) -> bool | None:
+        """Return the cached push-notification state."""
+        return self.coordinator.push_enabled
+
+    @property
+    def assumed_state(self) -> bool:
+        """Optimistic only while the state is still unknown."""
+        return self.coordinator.push_enabled is None
+
+    async def async_turn_on(self, **_kwargs: Any) -> None:
+        """Enable push notifications."""
+        await self.coordinator.async_set_push_enabled(True)
+        self.async_write_ha_state()
+
+    async def async_turn_off(self, **_kwargs: Any) -> None:
+        """Disable push notifications."""
+        await self.coordinator.async_set_push_enabled(False)
+        self.async_write_ha_state()
+
+
+class BydSmartChargingSwitch(BydVehicleEntity, RestoreEntity, SwitchEntity):
+    """Toggle the BYD smart-charging master switch.
+
+    Distinct from the schedule-enabled switch: this is BYD's
+    ``smartChargeSwitch`` master flag.  The homepage endpoint doesn't
+    read it back, so the switch is optimistic and restores its last
+    state across restarts.
+    """
+
+    _attr_has_entity_name = True
+    _attr_translation_key = "smart_charging"
+    _attr_icon = "mdi:battery-clock"
+    _attr_assumed_state = True
+
+    def __init__(
+        self,
+        coordinator: BydDataUpdateCoordinator,
+        vin: str,
+        vehicle: Vehicle,
+    ) -> None:
+        super().__init__(coordinator)
+        self._vin = vin
+        self._vehicle = vehicle
+        self._attr_unique_id = f"{vin}_switch_smart_charging"
+        self._state: bool | None = None
+
+    async def async_added_to_hass(self) -> None:
+        """Restore the last optimistic state on startup."""
+        await super().async_added_to_hass()
+        last = await self.async_get_last_state()
+        if last is not None and last.state in ("on", "off"):
+            self._state = last.state == "on"
+
+    @property
+    def is_on(self) -> bool | None:
+        """Return the optimistic smart-charging state."""
+        return self._state
+
+    async def async_turn_on(self, **_kwargs: Any) -> None:
+        """Enable smart charging."""
+        await self.coordinator.async_set_smart_charging(True)
+        self._state = True
+        self.async_write_ha_state()
+
+    async def async_turn_off(self, **_kwargs: Any) -> None:
+        """Disable smart charging."""
+        await self.coordinator.async_set_smart_charging(False)
+        self._state = False
+        self.async_write_ha_state()
 
 
 class BydRepeatDailySwitch(BydVehicleEntity, SwitchEntity):

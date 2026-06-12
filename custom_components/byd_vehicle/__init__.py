@@ -21,18 +21,22 @@ from pybyd import BydClient
 
 from .const import (
     CONF_BASE_URL,
+    CONF_BATTERY_KWH,
     CONF_CONTROL_PIN,
     CONF_COUNTRY_CODE,
     CONF_DEVICE_PROFILE,
     CONF_GPS_POLL_INTERVAL,
     CONF_LANGUAGE,
     CONF_POLL_INTERVAL,
+    DEFAULT_BATTERY_KWH,
     DEFAULT_COUNTRY,
     DEFAULT_GPS_POLL_INTERVAL,
     DEFAULT_POLL_INTERVAL,
     DOMAIN,
+    MAX_BATTERY_KWH,
     MAX_GPS_POLL_INTERVAL,
     MAX_POLL_INTERVAL,
+    MIN_BATTERY_KWH,
     MIN_GPS_POLL_INTERVAL,
     MIN_POLL_INTERVAL,
     PLATFORMS,
@@ -58,6 +62,17 @@ def _sanitize_interval(value: int, default: int, min_value: int, max_value: int)
     except (TypeError, ValueError):
         return default
     return max(min_value, min(max_value, parsed))
+
+
+def _sanitize_battery_kwh(value: Any) -> float:
+    """Clamp the configured battery capacity to a sane range."""
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        return DEFAULT_BATTERY_KWH
+    if parsed <= 0:
+        return DEFAULT_BATTERY_KWH
+    return max(MIN_BATTERY_KWH, min(MAX_BATTERY_KWH, parsed))
 
 
 async def async_migrate_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
@@ -221,6 +236,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         MIN_GPS_POLL_INTERVAL,
         MAX_GPS_POLL_INTERVAL,
     )
+    battery_kwh = _sanitize_battery_kwh(
+        entry.options.get(CONF_BATTERY_KWH, DEFAULT_BATTERY_KWH)
+    )
 
     async def _fetch_vehicles(client: BydClient) -> list:
         return await client.get_vehicles()
@@ -262,6 +280,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             vehicle,
             vin,
             poll_interval,
+            battery_kwh,
         )
         gps_coordinator = BydGpsUpdateCoordinator(
             hass,

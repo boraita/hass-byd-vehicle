@@ -14,3 +14,10 @@ ignore_missing_imports = true
 warn_unused_ignores = true
 warn_redundant_casts = true
 warn_unused_configs = true
+
+[tool.pytest.ini_options]
+# Make ``custom_components`` importable from the repo root and run async
+# tests without a per-test marker (pytest-homeassistant-custom-component).
+pythonpath = ["."]
+asyncio_mode = "auto"
+testpaths = ["tests"]

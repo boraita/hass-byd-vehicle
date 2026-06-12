@@ -48,6 +48,7 @@ from .const import (
     CONF_DEBUG_DUMPS,
     CONF_DEVICE_PROFILE,
     CONF_LANGUAGE,
+    DEFAULT_BATTERY_KWH,
     DEFAULT_DEBUG_DUMPS,
     DEFAULT_LANGUAGE,
     DOMAIN,
@@ -71,9 +72,11 @@ _HA_EVENT_CLOUD_ONLINE: str = f"{DOMAIN}_cloud_online"
 _TRIP_STORE_VERSION = 1
 _TRIP_STORE_SAVE_DELAY_SECONDS = 2.0
 
-# Battery capacity defaults to Sealion 7 Comfort nameplate (82.5 kWh).
-# Wrong for other trims/models; swap when pyBYD exposes per-model capacity.
-_DEFAULT_BATTERY_KWH: float = 82.5
+# Fallback battery capacity when no per-entry value is configured.  The
+# per-coordinator ``self._battery_kwh`` (sourced from ``CONF_BATTERY_KWH``)
+# is what the SoC->kWh conversions actually use; this constant only seeds
+# coordinators constructed without an explicit value.
+_DEFAULT_BATTERY_KWH: float = DEFAULT_BATTERY_KWH
 
 _AUTH_ERRORS = (BydAuthenticationError, BydSessionExpiredError)
 _RECOVERABLE_ERRORS = (
@@ -568,6 +571,7 @@ class BydDataUpdateCoordinator(DataUpdateCoordinator[VehicleSnapshot]):
         vehicle: Vehicle,
         vin: str,
         poll_interval: int,
+        battery_kwh: float = _DEFAULT_BATTERY_KWH,
     ) -> None:
         super().__init__(
             hass,
@@ -578,12 +582,17 @@ class BydDataUpdateCoordinator(DataUpdateCoordinator[VehicleSnapshot]):
         self._api = api
         self._vehicle = vehicle
         self._vin = vin
+        self._battery_kwh = battery_kwh
         self._fixed_interval = timedelta(seconds=poll_interval)
         self._polling_enabled = True
         self._force_next_refresh = False
         self._car: BydCar | None = None
         self._realtime_endpoint_unsupported: bool = False
         self._energy_supported: bool | None = None
+        # Cached push-notification switch state.  The homepage/realtime
+        # payloads don't carry it, so it's fetched on demand via
+        # ``get_push_state`` and cached for the switch's read-back.
+        self._push_enabled: bool | None = None
         self._charge_session_started_at: datetime | None = None
         self._charge_session_start_soc: float | None = None
         # When charging transitions ON → OFF mid-session, record the
@@ -748,6 +757,11 @@ class BydDataUpdateCoordinator(DataUpdateCoordinator[VehicleSnapshot]):
     def car(self) -> BydCar | None:
         """Return the ``BydCar`` instance if available."""
         return self._car
+
+    @property
+    def battery_kwh(self) -> float:
+        """Configured usable battery capacity (kWh) for SoC->kWh maths."""
+        return self._battery_kwh
 
     @property
     def vehicle(self) -> Vehicle:
@@ -1855,7 +1869,7 @@ class BydDataUpdateCoordinator(DataUpdateCoordinator[VehicleSnapshot]):
         kwh_added = None
         if start_soc is not None and end_soc is not None:
             soc_added = round(max(0.0, float(end_soc) - float(start_soc)), 1)
-            kwh_added = round(soc_added * 82.5 / 100.0, 2)
+            kwh_added = round(soc_added * self._battery_kwh / 100.0, 2)
         powers = [kw for s in self._charge_curve if (kw := s.get("kw")) is not None]
         avg_kw = round(sum(powers) / len(powers), 2) if powers else None
         self._charge_sessions.append(
@@ -1912,17 +1926,16 @@ class BydDataUpdateCoordinator(DataUpdateCoordinator[VehicleSnapshot]):
     def charge_session_kwh_added(self) -> float | None:
         """Approximate kWh delivered to the battery this session.
 
-        Derived from the SoC delta against the Sealion 7 Comfort
-        nameplate capacity (82.5 kWh).  Coarse but works for any
-        charging source — V2C, public AC, public DC — since the cloud
-        reports the same SoC field regardless of where the energy
-        came from.  When pyBYD adds per-model capacity metadata, swap
-        the constant here.
+        Derived from the SoC delta against the configured usable battery
+        capacity (``CONF_BATTERY_KWH``, default the Sealion 7 Comfort
+        82.5 kWh nameplate).  Coarse but works for any charging source —
+        V2C, public AC, public DC — since the cloud reports the same SoC
+        field regardless of where the energy came from.
         """
         soc_added = self.charge_session_soc_added
         if soc_added is None:
             return None
-        return round(soc_added * _DEFAULT_BATTERY_KWH / 100.0, 2)
+        return round(soc_added * self._battery_kwh / 100.0, 2)
 
     @property
     def time_until_full_minutes(self) -> int | None:
@@ -1950,7 +1963,7 @@ class BydDataUpdateCoordinator(DataUpdateCoordinator[VehicleSnapshot]):
                 power_w = abs(float(gl))
         if power_w is None or power_w < 500:
             return None
-        kwh_remaining = _DEFAULT_BATTERY_KWH * remaining_soc / 100.0
+        kwh_remaining = self._battery_kwh * remaining_soc / 100.0
         minutes = (kwh_remaining * 1000.0 / power_w) * 60.0
         return int(minutes)
 
@@ -2377,6 +2390,70 @@ class BydDataUpdateCoordinator(DataUpdateCoordinator[VehicleSnapshot]):
         # snapshot via ``update_charging`` — push the new snapshot out
         # to subscribers so dependent sensors update immediately.
         self.async_set_updated_data(self._car.state)
+
+    # ------------------------------------------------------------------
+    # Push notifications + smart-charging master toggle
+    # ------------------------------------------------------------------
+
+    @property
+    def push_enabled(self) -> bool | None:
+        """Last-known push-notification switch state (``None`` if unknown)."""
+        return self._push_enabled
+
+    async def async_refresh_push_state(self) -> bool | None:
+        """Fetch the push-notification switch state and cache it.
+
+        Best-effort: on any failure the previous cached value is kept and
+        returned, so a transient error doesn't flip the switch to unknown.
+        """
+        vin = self._vin
+
+        async def _fetch(client: BydClient) -> Any:
+            return await client.get_push_state(vin)
+
+        try:
+            state = await self._api.async_call(
+                _fetch, vin=vin, command="get_push_state"
+            )
+        except (UpdateFailed, ConfigEntryAuthFailed, HomeAssistantError) as exc:
+            _LOGGER.debug(
+                "push state fetch failed vin=%s: %s", vin[-6:], exc
+            )
+            return self._push_enabled
+        enabled = getattr(state, "is_enabled", None)
+        if enabled is not None:
+            self._push_enabled = enabled
+        return self._push_enabled
+
+    async def async_set_push_enabled(self, enable: bool) -> None:
+        """Enable/disable BYD push notifications for this VIN.
+
+        Raises :class:`HomeAssistantError` (incl. ``UpdateFailed`` /
+        ``ConfigEntryAuthFailed`` subclasses) on failure so the UI surfaces it.
+        """
+        vin = self._vin
+
+        async def _set(client: BydClient) -> Any:
+            return await client.set_push_state(vin, enable=enable)
+
+        await self._api.async_call(_set, vin=vin, command="set_push_state")
+        self._push_enabled = enable
+
+    async def async_set_smart_charging(self, enable: bool) -> None:
+        """Toggle the BYD smart-charging master switch for this VIN.
+
+        The homepage endpoint doesn't read this flag back, so callers treat
+        the switch as optimistic.  Raises :class:`HomeAssistantError` on
+        failure.
+        """
+        vin = self._vin
+
+        async def _toggle(client: BydClient) -> Any:
+            return await client.toggle_smart_charging(vin, enable=enable)
+
+        await self._api.async_call(
+            _toggle, vin=vin, command="toggle_smart_charging"
+        )
 
     async def async_start_charging(self) -> None:
         """Start charging immediately and refresh charging state on success.

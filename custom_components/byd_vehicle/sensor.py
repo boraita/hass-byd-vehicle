@@ -36,7 +36,7 @@ from pybyd.models.hvac import AirConditioningMode, HvacWindMode, HvacWindPositio
 from pybyd.models.realtime import TirePressureUnit
 from pybyd.models.vehicle import EnergyType, Vehicle
 
-from .const import DOMAIN
+from .const import DEFAULT_BATTERY_KWH, DOMAIN
 from .coordinator import BydDataUpdateCoordinator
 from .entity import BydVehicleEntity
 
@@ -67,8 +67,9 @@ def _estimate_minutes_to_full(realtime: Any) -> int | None:
 
     Mirrors ``BydDataUpdateCoordinator.time_until_full_minutes`` so the
     realtime-sourced ``full_hour``/``full_minute`` entities can show the
-    same estimate as ``time_until_full``.  Battery capacity hard-coded to
-    the Sealion 7 Comfort 82.5 kWh nameplate.
+    same estimate as ``time_until_full``.  This diagnostic duplicate uses
+    the default nameplate capacity; the canonical ``time_until_full``
+    coordinator property honours the per-entry ``CONF_BATTERY_KWH``.
     """
     if realtime is None:
         return None
@@ -83,7 +84,7 @@ def _estimate_minutes_to_full(realtime: Any) -> int | None:
         return None
     if soc_f >= 100 or power_w < 500:
         return None
-    kwh_remaining = 82.5 * (100.0 - soc_f) / 100.0
+    kwh_remaining = DEFAULT_BATTERY_KWH * (100.0 - soc_f) / 100.0
     return int((kwh_remaining * 1000.0 / power_w) * 60.0)
 
 

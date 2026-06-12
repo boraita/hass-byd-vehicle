@@ -28,6 +28,7 @@ CONF_DEVICE_PROFILE = "device_profile"
 CONF_CONTROL_PIN = "control_pin"
 CONF_CLIMATE_DURATION = "climate_duration"
 CONF_DEBUG_DUMPS = "debug_dumps"
+CONF_BATTERY_KWH = "battery_kwh"
 
 DEFAULT_POLL_INTERVAL = 300
 DEFAULT_GPS_POLL_INTERVAL = 300
@@ -35,11 +36,17 @@ DEFAULT_CLIMATE_DURATION = 10
 DEFAULT_DEBUG_DUMPS = False
 DEFAULT_COUNTRY = "United Kingdom"
 DEFAULT_LANGUAGE = "en"
+# Usable battery capacity (kWh) used to convert SoC deltas into energy.
+# Default is the Sealion 7 Comfort nameplate; configurable per entry so
+# other trims/models (e.g. the 91.3 kWh Design) report accurate kWh.
+DEFAULT_BATTERY_KWH = 82.5
 
 MIN_POLL_INTERVAL = 30
 MAX_POLL_INTERVAL = 900
 MIN_GPS_POLL_INTERVAL = 30
 MAX_GPS_POLL_INTERVAL = 900
+MIN_BATTERY_KWH = 10.0
+MAX_BATTERY_KWH = 200.0
 
 # Node-to-server mapping based on BYD app reverse engineering.
 # Push server URLs are stored as reference metadata for future usage.
