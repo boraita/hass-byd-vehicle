@@ -1554,6 +1554,29 @@ class BydDataUpdateCoordinator(DataUpdateCoordinator[VehicleSnapshot]):
             summary["soc_used"] = round(float(start_soc) - float(end_soc), 1)
         else:
             summary["soc_used"] = None
+
+        # Coarse per-trip energy + efficiency from the SoC delta and pack
+        # nameplate.  We poll at intervals (not per CAN tick), so we cannot
+        # sum the signed discharge counter the way an on-device logger would;
+        # the SoC-based estimate is the honest approximation available here.
+        # A negative soc_used (net regen / charged-while-on) yields negative
+        # energy, which we surface as-is but skip for the efficiency figure.
+        soc_used = summary["soc_used"]
+        distance = summary["distance_km"]
+        if isinstance(soc_used, (int, float)):
+            summary["energy_kwh"] = round(soc_used * _DEFAULT_BATTERY_KWH / 100.0, 2)
+        else:
+            summary["energy_kwh"] = None
+        energy = summary["energy_kwh"]
+        if (
+            isinstance(energy, (int, float))
+            and energy > 0
+            and isinstance(distance, (int, float))
+            and distance > 0
+        ):
+            summary["efficiency_kwh_per_100km"] = round(energy / distance * 100.0, 1)
+        else:
+            summary["efficiency_kwh_per_100km"] = None
         return summary
 
     def _maybe_fire_capability_changes(

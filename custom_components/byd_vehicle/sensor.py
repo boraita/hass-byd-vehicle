@@ -847,6 +847,31 @@ SENSOR_DESCRIPTIONS: tuple[BydSensorDescription, ...] = (
         icon="mdi:map-marker-path",
         entity_registry_enabled_default=False,
     ),
+    # Coarse per-trip energy + efficiency, derived from the SoC delta and
+    # pack nameplate (we poll at intervals, so we cannot sum the signed
+    # discharge counter the way an on-device logger would).
+    BydSensorDescription(
+        key="last_trip_energy",
+        name="Last trip energy",
+        source="coordinator",
+        value_fn=lambda c: (c.last_trip or {}).get("energy_kwh"),
+        # No ENERGY device_class: that requires TOTAL/TOTAL_INCREASING, but
+        # this is a discrete per-trip figure that resets each trip.
+        native_unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
+        state_class=SensorStateClass.MEASUREMENT,
+        icon="mdi:lightning-bolt",
+        entity_registry_enabled_default=False,
+    ),
+    BydSensorDescription(
+        key="last_trip_efficiency",
+        name="Last trip efficiency",
+        source="coordinator",
+        value_fn=lambda c: (c.last_trip or {}).get("efficiency_kwh_per_100km"),
+        native_unit_of_measurement="kWh/100 km",
+        state_class=SensorStateClass.MEASUREMENT,
+        icon="mdi:gauge",
+        entity_registry_enabled_default=False,
+    ),
     # Timestamp of the latest charging session start (i.e. the last time
     # ``charging.charging_state`` transitioned to 1).  Cleared on plug-out.
     # Useful for "how long has this charge been running" automations.
@@ -1571,7 +1596,7 @@ SENSOR_DESCRIPTIONS: tuple[BydSensorDescription, ...] = (
         key="departure_target_time",
         name="Departure target time",
         source="charging_schedule_journey",
-        available_fn=lambda obj: (obj is not None and obj.use_vehicle_time is not None),
+        available_fn=lambda obj: obj is not None and obj.use_vehicle_time is not None,
         value_fn=lambda obj: (
             obj.use_vehicle_time.strftime("%H:%M")
             if obj is not None and obj.use_vehicle_time is not None
@@ -1585,7 +1610,7 @@ SENSOR_DESCRIPTIONS: tuple[BydSensorDescription, ...] = (
         key="discount_window_start",
         name="Off-peak window start",
         source="charging_schedule_journey",
-        available_fn=lambda obj: (obj is not None and obj.discount_start is not None),
+        available_fn=lambda obj: obj is not None and obj.discount_start is not None,
         value_fn=lambda obj: (
             obj.discount_start.strftime("%H:%M")
             if obj is not None and obj.discount_start is not None
@@ -1599,7 +1624,7 @@ SENSOR_DESCRIPTIONS: tuple[BydSensorDescription, ...] = (
         key="discount_window_end",
         name="Off-peak window end",
         source="charging_schedule_journey",
-        available_fn=lambda obj: (obj is not None and obj.discount_end is not None),
+        available_fn=lambda obj: obj is not None and obj.discount_end is not None,
         value_fn=lambda obj: (
             obj.discount_end.strftime("%H:%M")
             if obj is not None and obj.discount_end is not None
