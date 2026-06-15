@@ -20,6 +20,7 @@ from homeassistant.helpers.update_coordinator import (
     DataUpdateCoordinator,
     UpdateFailed,
 )
+from homeassistant.util import dt as dt_util
 from pybyd import (
     BydApiError,
     BydAuthenticationError,
@@ -651,6 +652,7 @@ class BydDataUpdateCoordinator(DataUpdateCoordinator[VehicleSnapshot]):
         self._schedule_hvac_final_reconcile_if_needed(previous_snapshot, snapshot)
         self._track_charge_session(previous_snapshot, snapshot)
         self._track_efficiency_window(snapshot)
+        self._track_distance_anchors(snapshot)
         self._maybe_fire_phase_changed(previous_snapshot, snapshot)
         self._maybe_handle_state_transitions(previous_snapshot, snapshot)
 
@@ -1181,6 +1183,7 @@ class BydDataUpdateCoordinator(DataUpdateCoordinator[VehicleSnapshot]):
         self._apply_adaptive_interval(snapshot)
         self._track_charge_session(previous_snapshot, snapshot)
         self._track_efficiency_window(snapshot)
+        self._track_distance_anchors(snapshot)
         self._maybe_fire_phase_changed(previous_snapshot, snapshot)
         self._maybe_handle_state_transitions(previous_snapshot, snapshot)
 
@@ -1779,6 +1782,76 @@ class BydDataUpdateCoordinator(DataUpdateCoordinator[VehicleSnapshot]):
             return None
         energy = soc_used * _DEFAULT_BATTERY_KWH / 100.0
         return round(energy / distance * 100.0, 1)
+
+    def _track_distance_anchors(self, current: VehicleSnapshot) -> None:
+        """Maintain start-of-day / start-of-month odometer anchors.
+
+        Anchors are stored in the persisted trip store keyed by the local
+        (HA timezone) day / month so "distance today" and "distance this
+        month" survive restarts and roll over cleanly at midnight / the 1st.
+        The anchor is the first odometer reading seen in that period.
+        """
+        if current.realtime is None:
+            return
+        odo = getattr(current.realtime, "total_mileage", None)
+        if not isinstance(odo, (int, float)) or odo <= 0:
+            return
+        now_local = dt_util.now()
+        day_key = now_local.date().isoformat()
+        month_key = now_local.strftime("%Y-%m")
+        changed = False
+        day_anchor = self._trip_data.get("odo_day_anchor")
+        if not isinstance(day_anchor, dict) or day_anchor.get("day") != day_key:
+            self._trip_data["odo_day_anchor"] = {"day": day_key, "odo": float(odo)}
+            changed = True
+        month_anchor = self._trip_data.get("odo_month_anchor")
+        if not isinstance(month_anchor, dict) or month_anchor.get("month") != month_key:
+            self._trip_data["odo_month_anchor"] = {
+                "month": month_key,
+                "odo": float(odo),
+            }
+            changed = True
+        if changed and self._trip_store_loaded:
+            self._trip_store.async_delay_save(
+                lambda: dict(self._trip_data), _TRIP_STORE_SAVE_DELAY_SECONDS
+            )
+
+    def _distance_since_anchor(self, anchor_key: str, sub_key: str) -> float | None:
+        anchor = self._trip_data.get(anchor_key)
+        if not isinstance(anchor, dict):
+            return None
+        start = anchor.get("odo")
+        snap = self.data
+        if snap is None or snap.realtime is None:
+            return None
+        odo = getattr(snap.realtime, "total_mileage", None)
+        if not isinstance(start, (int, float)) or not isinstance(odo, (int, float)):
+            return None
+        return round(max(0.0, float(odo) - float(start)), 1)
+
+    @property
+    def distance_today_km(self) -> float | None:
+        """Km driven since the first odometer reading of the local day."""
+        return self._distance_since_anchor("odo_day_anchor", "day")
+
+    @property
+    def distance_this_month_km(self) -> float | None:
+        """Km driven since the first odometer reading of the local month."""
+        return self._distance_since_anchor("odo_month_anchor", "month")
+
+    @property
+    def km_per_soc_percent(self) -> float | None:
+        """Estimated range per 1% of SoC (km/%), from range ÷ current SoC."""
+        snap = self.data
+        if snap is None or snap.realtime is None:
+            return None
+        rng = getattr(snap.realtime, "ev_endurance", None) or getattr(
+            snap.realtime, "endurance_mileage", None
+        )
+        soc = getattr(snap.realtime, "elec_percent", None)
+        if isinstance(rng, (int, float)) and isinstance(soc, (int, float)) and soc > 0:
+            return round(float(rng) / float(soc), 2)
+        return None
 
     def _track_charge_session(
         self,
