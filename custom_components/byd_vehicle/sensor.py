@@ -886,6 +886,43 @@ SENSOR_DESCRIPTIONS: tuple[BydSensorDescription, ...] = (
         icon="mdi:gauge",
         entity_registry_enabled_default=False,
     ),
+    # Distance driven since the first odometer reading of the local day /
+    # month (anchors persisted, roll over at midnight / the 1st). Useful for
+    # "how far this month" dashboards without an external utility_meter.
+    BydSensorDescription(
+        key="distance_today",
+        name="Distance today",
+        source="coordinator",
+        value_fn=lambda c: c.distance_today_km,
+        native_unit_of_measurement=UnitOfLength.KILOMETERS,
+        device_class=SensorDeviceClass.DISTANCE,
+        state_class=SensorStateClass.MEASUREMENT,
+        icon="mdi:map-marker-distance",
+        entity_registry_enabled_default=False,
+    ),
+    BydSensorDescription(
+        key="distance_this_month",
+        name="Distance this month",
+        source="coordinator",
+        value_fn=lambda c: c.distance_this_month_km,
+        native_unit_of_measurement=UnitOfLength.KILOMETERS,
+        device_class=SensorDeviceClass.DISTANCE,
+        state_class=SensorStateClass.MEASUREMENT,
+        icon="mdi:calendar-month",
+        entity_registry_enabled_default=False,
+    ),
+    # Range per 1% of SoC (km/%) — intuitive efficiency proxy from the car's
+    # own range estimate divided by current SoC.
+    BydSensorDescription(
+        key="km_per_soc",
+        name="Range per 1% SoC",
+        source="coordinator",
+        value_fn=lambda c: c.km_per_soc_percent,
+        native_unit_of_measurement="km/%",
+        state_class=SensorStateClass.MEASUREMENT,
+        icon="mdi:map-marker-distance",
+        entity_registry_enabled_default=False,
+    ),
     # Canonical ignition/power state as a readable enum. pyBYD currently
     # decodes only off/on (the cloud realtime ``vehicleState``); the raw
     # value + power_gear + pwr ride along as attributes so an ACC-vs-READY
