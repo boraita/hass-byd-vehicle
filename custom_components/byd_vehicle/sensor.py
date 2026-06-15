@@ -33,7 +33,7 @@ from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 from pybyd.models import BydEnum
 from pybyd.models.hvac import AirConditioningMode, HvacWindMode, HvacWindPosition
-from pybyd.models.realtime import TirePressureUnit
+from pybyd.models.realtime import TirePressureUnit, VehicleState
 from pybyd.models.vehicle import EnergyType, Vehicle
 
 from .const import DOMAIN
@@ -870,6 +870,56 @@ SENSOR_DESCRIPTIONS: tuple[BydSensorDescription, ...] = (
         native_unit_of_measurement="kWh/100 km",
         state_class=SensorStateClass.MEASUREMENT,
         icon="mdi:gauge",
+        entity_registry_enabled_default=False,
+    ),
+    # Canonical ignition/power state as a readable enum. pyBYD currently
+    # decodes only off/on (the cloud realtime ``vehicleState``); the raw
+    # value + power_gear + pwr ride along as attributes so an ACC-vs-READY
+    # distinction can be mapped empirically (capture with the car in
+    # "accessory / music only" mode). Consumers like a trip logger can use
+    # this single entity instead of the binary vehicle_on.
+    BydSensorDescription(
+        key="vehicle_state",
+        name="Vehicle state",
+        source="realtime",
+        icon="mdi:car-electric",
+        device_class=SensorDeviceClass.ENUM,
+        options=[s.name.lower() for s in VehicleState],
+        value_fn=lambda r: (
+            r.vehicle_state.name.lower()
+            if r is not None and getattr(r, "vehicle_state", None) is not None
+            else None
+        ),
+        state_attrs_fn=lambda r: (
+            {
+                "raw_state": getattr(getattr(r, "vehicle_state", None), "value", None),
+                "power_gear": (
+                    pg.name.lower()
+                    if (pg := getattr(r, "power_gear", None)) is not None
+                    else None
+                ),
+                "pwr": getattr(r, "pwr", None),
+            }
+            if r is not None
+            else {}
+        ),
+        entity_registry_enabled_default=False,
+        entity_category=EntityCategory.DIAGNOSTIC,
+    ),
+    # Lifetime cumulative charge energy added (SoC-delta × pack nameplate),
+    # monotonic — a TOTAL_INCREASING source for the HA Energy dashboard, which
+    # then derives cost/monthly rollups natively. Coarse (cloud gives no
+    # per-tick counter), and may be redundant with a smart wallbox meter, so
+    # disabled by default.
+    BydSensorDescription(
+        key="total_charge_energy",
+        name="Total charge energy",
+        source="coordinator",
+        value_fn=lambda c: c.total_charge_kwh,
+        native_unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
+        device_class=SensorDeviceClass.ENERGY,
+        state_class=SensorStateClass.TOTAL_INCREASING,
+        icon="mdi:ev-station",
         entity_registry_enabled_default=False,
     ),
     # Timestamp of the latest charging session start (i.e. the last time
