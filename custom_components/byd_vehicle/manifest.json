@@ -1,0 +1,18 @@
+{
+  "domain": "byd_vehicle",
+  "name": "BYD Vehicle",
+  "codeowners": [
+    "@jkaberg"
+  ],
+  "config_flow": true,
+  "documentation": "https://github.com/jkaberg/hass-byd-vehicle",
+  "iot_class": "cloud_polling",
+  "issue_tracker": "https://github.com/jkaberg/hass-byd-vehicle/issues",
+  "loggers": [
+    "pybyd"
+  ],
+  "requirements": [
+    "pybyd@git+https://github.com/boraita/pyBYD@dd74ca9c37a233c514b52778ffb7b1d5c1baa219"
+  ],
+  "version": "0.0.81-sealion.87"
+}
