@@ -595,6 +595,10 @@ class BydDataUpdateCoordinator(DataUpdateCoordinator[VehicleSnapshot]):
         self._charging_off_since: datetime | None = None
         self._charge_curve: list[dict[str, Any]] = []
         self._charge_sessions: list[dict[str, Any]] = []
+        # Rolling (odometer_km, soc_pct) samples for the trailing-window
+        # efficiency sensor.  In-memory; rebuilds over the window distance
+        # after a restart.  Trimmed to the last _EFFICIENCY_WINDOW_KM.
+        self._efficiency_window: list[tuple[float, float]] = []
         self._last_mqtt_push_at: datetime | None = None
         self._last_successful_fetch_at: datetime | None = None
         # Diagnostic for the manual Fetch energy button — captures
@@ -646,6 +650,7 @@ class BydDataUpdateCoordinator(DataUpdateCoordinator[VehicleSnapshot]):
         self._last_mqtt_push_at = datetime.now(tz=UTC)
         self._schedule_hvac_final_reconcile_if_needed(previous_snapshot, snapshot)
         self._track_charge_session(previous_snapshot, snapshot)
+        self._track_efficiency_window(snapshot)
         self._maybe_fire_phase_changed(previous_snapshot, snapshot)
         self._maybe_handle_state_transitions(previous_snapshot, snapshot)
 
@@ -1175,6 +1180,7 @@ class BydDataUpdateCoordinator(DataUpdateCoordinator[VehicleSnapshot]):
         # Adapt next poll interval based on the just-observed state.
         self._apply_adaptive_interval(snapshot)
         self._track_charge_session(previous_snapshot, snapshot)
+        self._track_efficiency_window(snapshot)
         self._maybe_fire_phase_changed(previous_snapshot, snapshot)
         self._maybe_handle_state_transitions(previous_snapshot, snapshot)
 
@@ -1710,6 +1716,69 @@ class BydDataUpdateCoordinator(DataUpdateCoordinator[VehicleSnapshot]):
     # pause cadence and well below any legitimate short-then-restart
     # scenario.
     _CHARGE_SESSION_COALESCE_WINDOW_SECONDS = 600
+
+    #: Trailing window (km) for the recent-efficiency sensor.
+    _EFFICIENCY_WINDOW_KM = 30.0
+    #: Minimum spanned distance before a figure is published (km).
+    _EFFICIENCY_MIN_KM = 5.0
+
+    def _track_efficiency_window(self, current: VehicleSnapshot) -> None:
+        """Append an (odometer, SoC) sample and trim to the trailing window.
+
+        Feeds :attr:`recent_efficiency_kwh_per_100km`.  Samples are only
+        kept when both odometer and SoC are present and the odometer has
+        advanced (skips parked/charging noise and SoC rises from charging).
+        """
+        odo: Any = None
+        soc: Any = None
+        if current.realtime is not None:
+            odo = getattr(current.realtime, "total_mileage", None)
+            soc = getattr(current.realtime, "elec_percent", None)
+        if soc is None and current.charging is not None:
+            soc = getattr(current.charging, "soc", None)
+        if not isinstance(odo, (int, float)) or not isinstance(soc, (int, float)):
+            return
+        odo_f = float(odo)
+        soc_f = float(soc)
+        window = self._efficiency_window
+        if window:
+            last_odo, last_soc = window[-1]
+            if odo_f < last_odo:
+                # Odometer went backwards (sentinel/glitch) — reset.
+                window.clear()
+            elif odo_f == last_odo:
+                # No movement: refresh the latest SoC in place so a SoC
+                # rise while parked/charging doesn't look like consumption.
+                window[-1] = (odo_f, soc_f)
+                return
+        window.append((odo_f, soc_f))
+        # Trim from the front to keep only the last _EFFICIENCY_WINDOW_KM.
+        while len(window) > 2 and (odo_f - window[0][0]) > self._EFFICIENCY_WINDOW_KM:
+            window.pop(0)
+
+    @property
+    def recent_efficiency_kwh_per_100km(self) -> float | None:
+        """Trailing-window energy efficiency (kWh/100km), SoC-based.
+
+        Computed over the last :attr:`_EFFICIENCY_WINDOW_KM` of driving from
+        the SoC drop × pack nameplate and the odometer delta.  Returns
+        ``None`` until at least :attr:`_EFFICIENCY_MIN_KM` is spanned or when
+        the net SoC change is a rise (regen/charge), where consumption is
+        undefined.
+        """
+        window = self._efficiency_window
+        if len(window) < 2:
+            return None
+        start_odo, start_soc = window[0]
+        end_odo, end_soc = window[-1]
+        distance = end_odo - start_odo
+        if distance < self._EFFICIENCY_MIN_KM:
+            return None
+        soc_used = start_soc - end_soc
+        if soc_used <= 0:
+            return None
+        energy = soc_used * _DEFAULT_BATTERY_KWH / 100.0
+        return round(energy / distance * 100.0, 1)
 
     def _track_charge_session(
         self,
