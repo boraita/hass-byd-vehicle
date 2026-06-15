@@ -872,6 +872,20 @@ SENSOR_DESCRIPTIONS: tuple[BydSensorDescription, ...] = (
         icon="mdi:gauge",
         entity_registry_enabled_default=False,
     ),
+    # Trailing-window energy efficiency (kWh/100km) over the last ~30 km of
+    # driving, SoC-based (the live "real consumption lately" figure). Distinct
+    # from per-trip efficiency: it rolls continuously across trips. Populates
+    # after ~5 km of driving; unknown while parked/charging or on net regen.
+    BydSensorDescription(
+        key="recent_efficiency",
+        name="Recent efficiency",
+        source="coordinator",
+        value_fn=lambda c: c.recent_efficiency_kwh_per_100km,
+        native_unit_of_measurement="kWh/100 km",
+        state_class=SensorStateClass.MEASUREMENT,
+        icon="mdi:gauge",
+        entity_registry_enabled_default=False,
+    ),
     # Canonical ignition/power state as a readable enum. pyBYD currently
     # decodes only off/on (the cloud realtime ``vehicleState``); the raw
     # value + power_gear + pwr ride along as attributes so an ACC-vs-READY
