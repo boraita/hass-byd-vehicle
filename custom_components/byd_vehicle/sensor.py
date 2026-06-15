@@ -937,6 +937,37 @@ SENSOR_DESCRIPTIONS: tuple[BydSensorDescription, ...] = (
         icon="mdi:map-marker-distance",
         entity_registry_enabled_default=False,
     ),
+    # Aggregate stats over the persisted trip history (builds up over time;
+    # unknown until trips are recorded). 30-day average is distance-weighted.
+    BydSensorDescription(
+        key="trips_this_month",
+        name="Trips this month",
+        source="coordinator",
+        value_fn=lambda c: c.trips_this_month,
+        state_class=SensorStateClass.MEASUREMENT,
+        icon="mdi:counter",
+        entity_registry_enabled_default=False,
+    ),
+    BydSensorDescription(
+        key="avg_efficiency_30d",
+        name="Average efficiency (30 days)",
+        source="coordinator",
+        value_fn=lambda c: c.avg_efficiency_30d_kwh_per_100km,
+        native_unit_of_measurement="kWh/100 km",
+        state_class=SensorStateClass.MEASUREMENT,
+        icon="mdi:gauge",
+        entity_registry_enabled_default=False,
+    ),
+    BydSensorDescription(
+        key="driving_streak",
+        name="Driving streak",
+        source="coordinator",
+        value_fn=lambda c: c.driving_streak_days,
+        native_unit_of_measurement="d",
+        state_class=SensorStateClass.MEASUREMENT,
+        icon="mdi:fire",
+        entity_registry_enabled_default=False,
+    ),
     # Canonical ignition/power state as a readable enum. pyBYD currently
     # decodes only off/on (the cloud realtime ``vehicleState``); the raw
     # value + power_gear + pwr ride along as attributes so an ACC-vs-READY

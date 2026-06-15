@@ -72,6 +72,9 @@ _HA_EVENT_CLOUD_ONLINE: str = f"{DOMAIN}_cloud_online"
 _TRIP_STORE_VERSION = 1
 _TRIP_STORE_SAVE_DELAY_SECONDS = 2.0
 
+# Cap the persisted trip history feeding the aggregate-stats sensors.
+_TRIP_HISTORY_MAX = 300
+
 # Battery capacity defaults to Sealion 7 Comfort nameplate (82.5 kWh).
 # Wrong for other trims/models; swap when pyBYD exposes per-model capacity.
 _DEFAULT_BATTERY_KWH: float = 82.5
@@ -1510,6 +1513,23 @@ class BydDataUpdateCoordinator(DataUpdateCoordinator[VehicleSnapshot]):
             if trip is not None:
                 self._trip_data["last_trip"] = trip
                 payload["trip"] = trip
+                # Append to a capped rolling history for the aggregate
+                # stats sensors (monthly distance, streak, 30-day average,
+                # seasonal penalty).  Only keep the compact fields we use.
+                history = self._trip_data.get("trip_history")
+                if not isinstance(history, list):
+                    history = []
+                history.append(
+                    {
+                        "started_at": trip.get("started_at"),
+                        "distance_km": trip.get("distance_km"),
+                        "energy_kwh": trip.get("energy_kwh"),
+                        "efficiency_kwh_per_100km": trip.get(
+                            "efficiency_kwh_per_100km"
+                        ),
+                    }
+                )
+                self._trip_data["trip_history"] = history[-_TRIP_HISTORY_MAX:]
             _LOGGER.info(
                 "Vehicle powered OFF: vin=%s trip=%s",
                 self._vin[-6:],
@@ -1895,6 +1915,84 @@ class BydDataUpdateCoordinator(DataUpdateCoordinator[VehicleSnapshot]):
     def distance_this_month_km(self) -> float | None:
         """Km driven since the first odometer reading of the local month."""
         return self._distance_since_anchor("odo_month_anchor", "month")
+
+    def _trip_history(self) -> list[dict[str, Any]]:
+        h = self._trip_data.get("trip_history")
+        return h if isinstance(h, list) else []
+
+    @staticmethod
+    def _parse_trip_dt(trip: dict[str, Any]) -> datetime | None:
+        raw = trip.get("started_at")
+        if not isinstance(raw, str):
+            return None
+        try:
+            return datetime.fromisoformat(raw)
+        except ValueError:
+            return None
+
+    @property
+    def trips_this_month(self) -> int | None:
+        """Number of recorded trips started in the current local month."""
+        history = self._trip_history()
+        if not history:
+            return None
+        now = dt_util.now()
+        count = 0
+        for trip in history:
+            dt = self._parse_trip_dt(trip)
+            if dt is not None:
+                local = dt_util.as_local(dt)
+                if local.year == now.year and local.month == now.month:
+                    count += 1
+        return count
+
+    @property
+    def avg_efficiency_30d_kwh_per_100km(self) -> float | None:
+        """Distance-weighted average efficiency over the last 30 days."""
+        cutoff = dt_util.now() - timedelta(days=30)
+        dist_sum = 0.0
+        energy_sum = 0.0
+        for trip in self._trip_history():
+            dt = self._parse_trip_dt(trip)
+            if dt is None or dt_util.as_local(dt) < cutoff:
+                continue
+            dist = trip.get("distance_km")
+            energy = trip.get("energy_kwh")
+            if (
+                isinstance(dist, (int, float))
+                and dist > 0
+                and isinstance(energy, (int, float))
+                and energy > 0
+            ):
+                dist_sum += dist
+                energy_sum += energy
+        if dist_sum <= 0:
+            return None
+        return round(energy_sum / dist_sum * 100.0, 1)
+
+    @property
+    def driving_streak_days(self) -> int | None:
+        """Consecutive calendar days (ending today/yesterday) with a trip."""
+        history = self._trip_history()
+        if not history:
+            return None
+        days = set()
+        for trip in history:
+            dt = self._parse_trip_dt(trip)
+            if dt is not None:
+                days.add(dt_util.as_local(dt).date())
+        if not days:
+            return None
+        today = dt_util.now().date()
+        # Streak only counts if it reaches today or yesterday.
+        if today not in days and (today - timedelta(days=1)) not in days:
+            return 0
+        streak = 0
+        cursor = today if today in days else today - timedelta(days=1)
+        while cursor in days:
+            streak += 1
+            cursor -= timedelta(days=1)
+        return streak
 
     @property
     def km_per_soc_percent(self) -> float | None:
