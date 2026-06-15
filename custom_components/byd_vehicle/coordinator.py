@@ -600,6 +600,7 @@ class BydDataUpdateCoordinator(DataUpdateCoordinator[VehicleSnapshot]):
         # efficiency sensor.  In-memory; rebuilds over the window distance
         # after a restart.  Trimmed to the last _EFFICIENCY_WINDOW_KM.
         self._efficiency_window: list[tuple[float, float]] = []
+        self._consumption_trend: str | None = None
         self._last_mqtt_push_at: datetime | None = None
         self._last_successful_fetch_at: datetime | None = None
         # Diagnostic for the manual Fetch energy button — captures
@@ -1758,6 +1759,62 @@ class BydDataUpdateCoordinator(DataUpdateCoordinator[VehicleSnapshot]):
         # Trim from the front to keep only the last _EFFICIENCY_WINDOW_KM.
         while len(window) > 2 and (odo_f - window[0][0]) > self._EFFICIENCY_WINDOW_KM:
             window.pop(0)
+        self._update_consumption_trend()
+
+    #: Short comparison window (km) for the consumption-trend arrow.
+    _EFFICIENCY_SHORT_KM = 5.0
+
+    def _efficiency_over(self, km_back: float) -> float | None:
+        """SoC-based efficiency (kWh/100km) over the last ``km_back`` km."""
+        window = self._efficiency_window
+        if len(window) < 2:
+            return None
+        end_odo, end_soc = window[-1]
+        start: tuple[float, float] | None = None
+        for odo, soc in window:
+            if end_odo - odo <= km_back:
+                start = (odo, soc)
+                break
+        if start is None:
+            return None
+        distance = end_odo - start[0]
+        if distance < 1.0:
+            return None
+        soc_used = start[1] - end_soc
+        if soc_used <= 0:
+            return None
+        return (soc_used * _DEFAULT_BATTERY_KWH / 100.0) / distance * 100.0
+
+    def _update_consumption_trend(self) -> None:
+        """Recompute the consumption-trend state with hysteresis.
+
+        Compares short-window (~5 km) efficiency against the full ~30 km
+        window.  Hysteresis bands (enter 0.90/1.10, exit 0.95/1.05) stop the
+        arrow flapping at every sample.
+        """
+        short = self._efficiency_over(self._EFFICIENCY_SHORT_KM)
+        long = self._efficiency_over(self._EFFICIENCY_WINDOW_KM)
+        if not short or not long or long <= 0:
+            return
+        ratio = short / long
+        state = self._consumption_trend
+        if state in (None, "steady"):
+            if ratio < 0.90:
+                state = "improving"
+            elif ratio > 1.10:
+                state = "worsening"
+            else:
+                state = "steady"
+        elif state == "improving" and ratio > 0.95:
+            state = "steady"
+        elif state == "worsening" and ratio < 1.05:
+            state = "steady"
+        self._consumption_trend = state
+
+    @property
+    def consumption_trend(self) -> str | None:
+        """Recent consumption trend: improving / steady / worsening."""
+        return self._consumption_trend
 
     @property
     def recent_efficiency_kwh_per_100km(self) -> float | None:
