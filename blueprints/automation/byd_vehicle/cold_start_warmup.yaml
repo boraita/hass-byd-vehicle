@@ -1,0 +1,76 @@
+blueprint:
+  name: "BYD: warm up on power-on when cold"
+  description: >
+    When the BYD is switched on and the outside temperature is below a
+    threshold, automatically turn on the climate and (optionally) the
+    steering-wheel / seat heating. Uses the integration's own command
+    entities — nothing here talks to the cloud directly.
+  domain: automation
+  author: boraita
+  source_url: https://github.com/boraita/hass-byd-vehicle/blob/main/blueprints/automation/byd_vehicle/cold_start_warmup.yaml
+  input:
+    vehicle_on:
+      name: Vehicle "on" sensor
+      description: The byd_vehicle "vehicle on" binary sensor.
+      selector:
+        entity:
+          filter:
+            - domain: binary_sensor
+              integration: byd_vehicle
+    outside_temp:
+      name: Exterior temperature sensor
+      selector:
+        entity:
+          filter:
+            - domain: sensor
+              device_class: temperature
+    cold_threshold:
+      name: Cold threshold (°C)
+      description: Only warm up when the exterior temperature is below this.
+      default: 5
+      selector:
+        number:
+          min: -15
+          max: 20
+          step: 1
+          unit_of_measurement: "°C"
+    climate_entity:
+      name: Climate entity
+      selector:
+        entity:
+          filter:
+            - domain: climate
+              integration: byd_vehicle
+    heat_switches:
+      name: Heating switches (optional)
+      description: e.g. steering-wheel heat / seat heat switches to turn on.
+      default: []
+      selector:
+        entity:
+          multiple: true
+          filter:
+            - domain: switch
+              integration: byd_vehicle
+mode: single
+max_exceeded: silent
+trigger:
+  - platform: state
+    entity_id: !input vehicle_on
+    from: "off"
+    to: "on"
+condition:
+  - condition: numeric_state
+    entity_id: !input outside_temp
+    below: !input cold_threshold
+action:
+  - service: climate.turn_on
+    target:
+      entity_id: !input climate_entity
+  - choose:
+      - conditions:
+          - condition: template
+            value_template: "{{ heat_switches | count > 0 }}"
+        sequence:
+          - service: switch.turn_on
+            target:
+              entity_id: !input heat_switches

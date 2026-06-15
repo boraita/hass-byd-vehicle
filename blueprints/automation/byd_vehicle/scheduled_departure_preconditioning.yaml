@@ -1,0 +1,80 @@
+blueprint:
+  name: "BYD: scheduled departure pre-conditioning"
+  description: >
+    Start the climate at a fixed time on chosen weekdays so the cabin is
+    comfortable when you leave — optionally only when the car is at home
+    and/or plugged in. Uses the integration's climate entity.
+  domain: automation
+  author: boraita
+  source_url: https://github.com/boraita/hass-byd-vehicle/blob/main/blueprints/automation/byd_vehicle/scheduled_departure_preconditioning.yaml
+  input:
+    departure_time:
+      name: Departure time
+      description: Time of day to start pre-conditioning.
+      selector:
+        time: {}
+    active_days:
+      name: Days
+      description: Days of the week this runs on.
+      default: [mon, tue, wed, thu, fri]
+      selector:
+        select:
+          multiple: true
+          options:
+            - { label: Monday, value: mon }
+            - { label: Tuesday, value: tue }
+            - { label: Wednesday, value: wed }
+            - { label: Thursday, value: thu }
+            - { label: Friday, value: fri }
+            - { label: Saturday, value: sat }
+            - { label: Sunday, value: sun }
+    climate_entity:
+      name: Climate entity
+      selector:
+        entity:
+          filter:
+            - domain: climate
+              integration: byd_vehicle
+    location_tracker:
+      name: Car location (optional)
+      description: If set, only pre-condition when this tracker is "home".
+      default: []
+      selector:
+        entity:
+          multiple: true
+          filter:
+            - domain: device_tracker
+    charger_connected:
+      name: Charger-connected sensor (optional)
+      description: If set, only pre-condition while plugged in.
+      default: []
+      selector:
+        entity:
+          multiple: true
+          filter:
+            - domain: binary_sensor
+              integration: byd_vehicle
+mode: single
+max_exceeded: silent
+trigger:
+  - platform: time
+    at: !input departure_time
+variables:
+  active_days: !input active_days
+  location_tracker: !input location_tracker
+  charger_connected: !input charger_connected
+condition:
+  - condition: template
+    value_template: "{{ now().strftime('%a') | lower in active_days }}"
+  - condition: template
+    value_template: >
+      {{ location_tracker | count == 0
+         or states(location_tracker[0]) == 'home' }}
+  - condition: template
+    value_template: >
+      {{ charger_connected | count == 0
+         or is_state(charger_connected[0], 'on') }}
+action:
+  - service: climate.turn_on
+    target:
+      entity_id: !input climate_entity
