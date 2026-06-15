@@ -1897,6 +1897,30 @@ class BydDataUpdateCoordinator(DataUpdateCoordinator[VehicleSnapshot]):
         if len(self._charge_sessions) > 10:
             self._charge_sessions = self._charge_sessions[-10:]
 
+        # Accumulate a lifetime charge-energy counter for the HA Energy
+        # dashboard.  Persisted in the trip store so it survives restarts.
+        # Coarse (SoC-delta × pack nameplate, same basis as kwh_added) — the
+        # only car-side energy figure the cloud gives us — but monotonic and
+        # TOTAL_INCREASING, which is what the Energy dashboard consumes.
+        if kwh_added:
+            self._trip_data["total_charge_kwh"] = round(
+                float(self._trip_data.get("total_charge_kwh", 0.0)) + kwh_added, 2
+            )
+            if self._trip_store_loaded:
+                self._trip_store.async_delay_save(
+                    lambda: dict(self._trip_data), _TRIP_STORE_SAVE_DELAY_SECONDS
+                )
+
+    @property
+    def total_charge_kwh(self) -> float | None:
+        """Lifetime cumulative charge energy added (kWh), monotonic.
+
+        SoC-based estimate accumulated across finished charge sessions;
+        suitable as a TOTAL_INCREASING source for the Energy dashboard.
+        """
+        val = self._trip_data.get("total_charge_kwh")
+        return float(val) if isinstance(val, (int, float)) else None
+
     @property
     def charge_session_duration_minutes(self) -> int | None:
         """Minutes elapsed in the current charge session.
