@@ -886,6 +886,20 @@ SENSOR_DESCRIPTIONS: tuple[BydSensorDescription, ...] = (
         icon="mdi:gauge",
         entity_registry_enabled_default=False,
     ),
+    # Consumption trend (improving/steady/worsening): short ~5 km window vs the
+    # ~30 km window, with hysteresis so it doesn't flap. A direction indicator
+    # for whether you're driving more or less efficiently than lately.
+    BydSensorDescription(
+        key="consumption_trend",
+        name="Consumption trend",
+        source="coordinator",
+        device_class=SensorDeviceClass.ENUM,
+        options=["improving", "steady", "worsening"],
+        value_fn=lambda c: c.consumption_trend,
+        icon="mdi:trending-up",
+        entity_registry_enabled_default=False,
+        entity_category=EntityCategory.DIAGNOSTIC,
+    ),
     # Distance driven since the first odometer reading of the local day /
     # month (anchors persisted, roll over at midnight / the 1st). Useful for
     # "how far this month" dashboards without an external utility_meter.
