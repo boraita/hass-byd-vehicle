@@ -66,6 +66,17 @@ _HA_EVENT_POWER_CHANGED: str = f"{DOMAIN}_power_changed"
 # Fired when the MQTT push channel (re)connects to the BYD cloud.
 # Payload: {vin}.  The "service is back up" signal.
 _HA_EVENT_CLOUD_ONLINE: str = f"{DOMAIN}_cloud_online"
+# Fired when the odometer jumped between two snapshots without us ever seeing
+# a power-on cycle — i.e. the car was driven while we were blind (cloud
+# blackout or a long sleep-gap between polls). An INFERRED, possibly-aggregate
+# trip so downstream consumers don't lose it. Payload below in
+# _maybe_detect_offline_drive.
+_HA_EVENT_OFFLINE_DRIVE: str = f"{DOMAIN}_offline_drive"
+# A drive entirely between two snapshots must move at least this far to be
+# inferred (filters odometer jitter); jumps beyond the max are treated as
+# sentinel garbage and ignored.
+_MIN_OFFLINE_DRIVE_KM: float = 1.0
+_MAX_OFFLINE_DRIVE_KM: float = 2000.0
 
 # Trip snapshots persist across HA restarts so a restart mid-trip does
 # not lose the power-on baseline (SoC/odometer at trip start).
@@ -1447,8 +1458,110 @@ class BydDataUpdateCoordinator(DataUpdateCoordinator[VehicleSnapshot]):
         new_power = _power_on(current)
         if prev_power is not None and new_power is not None and prev_power != new_power:
             self._handle_power_transition(is_on=new_power, snapshot=current)
+        else:
+            # No power flank this step.  If the odometer nonetheless jumped,
+            # the car was driven while we were blind (cloud blackout / long
+            # sleep-gap) and we never saw vehicle_on — recover that drive.
+            self._maybe_detect_offline_drive(previous, current, prev_power, new_power)
 
         self._maybe_fire_capability_changes(previous, current)
+
+    def _maybe_detect_offline_drive(
+        self,
+        previous: VehicleSnapshot,
+        current: VehicleSnapshot,
+        prev_power: bool | None,
+        new_power: bool | None,
+    ) -> None:
+        """Infer + announce a drive that happened entirely between two polls.
+
+        Fires :event:`byd_vehicle_offline_drive` (and records the distance in
+        the trip history) when the odometer advanced by a real margin while
+        the car looked powered-off in both snapshots — so a blackout/sleep-gap
+        drive isn't silently lost. May be an aggregate of several drives; it's
+        marked ``inferred`` and cannot be decomposed.
+        """
+        # Only when we did NOT observe the car powered on either side — a real
+        # tracked trip already covers the on→…→off case.
+        if prev_power is True or new_power is True:
+            return
+        if previous.realtime is None or current.realtime is None:
+            return
+        prev_odo = getattr(previous.realtime, "total_mileage", None)
+        cur_odo = getattr(current.realtime, "total_mileage", None)
+        if not isinstance(prev_odo, (int, float)) or not isinstance(
+            cur_odo, (int, float)
+        ):
+            return
+        distance = round(float(cur_odo) - float(prev_odo), 1)
+        if distance < _MIN_OFFLINE_DRIVE_KM or distance > _MAX_OFFLINE_DRIVE_KM:
+            return
+
+        def _soc(snap: VehicleSnapshot) -> float | None:
+            if snap.charging is not None:
+                s = getattr(snap.charging, "soc", None)
+                if s is not None:
+                    return float(s)
+            if snap.realtime is not None:
+                s = getattr(snap.realtime, "elec_percent", None)
+                if s is not None:
+                    return float(s)
+            return None
+
+        prev_soc = _soc(previous)
+        cur_soc = _soc(current)
+        soc_used = (
+            round(prev_soc - cur_soc, 1)
+            if isinstance(prev_soc, (int, float)) and isinstance(cur_soc, (int, float))
+            else None
+        )
+        energy_kwh = None
+        efficiency = None
+        if isinstance(soc_used, (int, float)) and soc_used > 0:
+            energy_kwh = round(soc_used * _DEFAULT_BATTERY_KWH / 100.0, 2)
+            if distance > 0:
+                efficiency = round(energy_kwh / distance * 100.0, 1)
+
+        now = datetime.now(tz=UTC)
+        trip = {
+            "inferred": True,
+            "started_at": (
+                self._last_successful_fetch_at.isoformat()
+                if self._last_successful_fetch_at is not None
+                else None
+            ),
+            "ended_at": now.isoformat(),
+            "start_odometer": float(prev_odo),
+            "end_odometer": float(cur_odo),
+            "distance_km": distance,
+            "soc_used": soc_used,
+            "energy_kwh": energy_kwh,
+            "efficiency_kwh_per_100km": efficiency,
+        }
+        history = self._trip_data.get("trip_history")
+        if not isinstance(history, list):
+            history = []
+        history.append(
+            {
+                "started_at": trip["started_at"] or now.isoformat(),
+                "distance_km": distance,
+                "energy_kwh": energy_kwh,
+                "efficiency_kwh_per_100km": efficiency,
+                "inferred": True,
+            }
+        )
+        self._trip_data["trip_history"] = history[-_TRIP_HISTORY_MAX:]
+        if self._trip_store_loaded:
+            self._trip_store.async_delay_save(
+                lambda: dict(self._trip_data), _TRIP_STORE_SAVE_DELAY_SECONDS
+            )
+        _LOGGER.info(
+            "Offline drive inferred: vin=%s distance=%skm soc_used=%s",
+            self._vin[-6:],
+            distance,
+            soc_used,
+        )
+        self.hass.bus.async_fire(_HA_EVENT_OFFLINE_DRIVE, {"vin": self._vin, **trip})
 
     @callback
     def _handle_power_transition(
