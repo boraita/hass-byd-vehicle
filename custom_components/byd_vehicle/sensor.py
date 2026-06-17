@@ -62,6 +62,14 @@ def keep_previous_when_zero(previous: Any, current: Any) -> Any:
     return current
 
 
+_CONNECTION_REASON: dict[str, str] = {
+    "ok": "Receiving data normally",
+    "paused": "Polling is paused — not fetching",
+    "rate_limited": "Cloud is throttling requests (service busy) — backing off",
+    "unreachable": "No data from the car — cloud down or out of coverage",
+}
+
+
 def _estimate_minutes_to_full(realtime: Any) -> int | None:
     """Minutes to 100% derived from current SoC + AC charge power.
 
@@ -871,6 +879,29 @@ SENSOR_DESCRIPTIONS: tuple[BydSensorDescription, ...] = (
         state_class=SensorStateClass.MEASUREMENT,
         icon="mdi:gauge",
         entity_registry_enabled_default=False,
+    ),
+    # Synthesised data-link status so dashboards/automations can SAY when the
+    # car is unreachable instead of silently showing stale data. Enabled by
+    # default. State = ok / paused / rate_limited / unreachable; the reason
+    # text + minutes-since-last-data ride along as attributes.
+    BydSensorDescription(
+        key="connection_status",
+        name="Connection status",
+        source="coordinator",
+        device_class=SensorDeviceClass.ENUM,
+        options=["ok", "paused", "rate_limited", "unreachable"],
+        value_fn=lambda c: c.connection_status,
+        state_attrs_fn=lambda c: {
+            "reason": _CONNECTION_REASON.get(c.connection_status, ""),
+            "minutes_since_data": c.minutes_since_last_data,
+            "last_successful_fetch": (
+                c.last_successful_fetch_at.isoformat()
+                if c.last_successful_fetch_at is not None
+                else None
+            ),
+        },
+        icon="mdi:cloud-check-variant",
+        entity_category=EntityCategory.DIAGNOSTIC,
     ),
     # Trailing-window energy efficiency (kWh/100km) over the last ~30 km of
     # driving, SoC-based (the live "real consumption lately" figure). Distinct

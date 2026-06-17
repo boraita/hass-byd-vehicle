@@ -2333,6 +2333,35 @@ class BydDataUpdateCoordinator(DataUpdateCoordinator[VehicleSnapshot]):
         return self._consecutive_fetch_failures < 3
 
     @property
+    def connection_status(self) -> str:
+        """Synthesised data-link state for the user.
+
+        - ``paused``: polling disabled (by the user / an automation) — we
+          are not even trying to fetch.
+        - ``rate_limited``: the cloud is throttling us (repeated 1008
+          service-busy) — usually transient, the adaptive interval backs off.
+        - ``unreachable``: 3+ consecutive failed fetches — **no data is
+          coming in**; the cloud is down, the network is broken, or the car
+          is out of coverage / deep asleep and the cloud can't reach it.
+        - ``ok``: data is flowing.
+        """
+        if not self._polling_enabled:
+            return "paused"
+        if self._service_busy_streak >= self._SERVICE_BUSY_BACKOFF_THRESHOLD:
+            return "rate_limited"
+        if not self.is_cloud_responsive:
+            return "unreachable"
+        return "ok"
+
+    @property
+    def minutes_since_last_data(self) -> float | None:
+        """Minutes since the last successful HTTP fetch (None if never)."""
+        if self._last_successful_fetch_at is None:
+            return None
+        delta = datetime.now(tz=UTC) - self._last_successful_fetch_at
+        return round(delta.total_seconds() / 60.0, 1)
+
+    @property
     def effective_poll_interval_seconds(self) -> int:
         """Current next-poll interval (may differ from base due to adaptive)."""
         if self.update_interval is None:
