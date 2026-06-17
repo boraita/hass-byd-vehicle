@@ -881,6 +881,11 @@ SENSOR_DESCRIPTIONS: tuple[BydSensorDescription, ...] = (
         name="Recent efficiency",
         source="coordinator",
         value_fn=lambda c: c.recent_efficiency_kwh_per_100km,
+        # The rolling window is in-memory and empties on restart, so the live
+        # value is None until ~5 km of fresh driving accumulates. Keep the last
+        # computed value (restored via RestoreSensor) instead of flipping to
+        # unknown while parked / right after a restart.
+        validator_fn=keep_previous_when_zero,
         native_unit_of_measurement="kWh/100 km",
         state_class=SensorStateClass.MEASUREMENT,
         icon="mdi:gauge",
