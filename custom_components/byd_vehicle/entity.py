@@ -155,6 +155,24 @@ class BydVehicleEntity(CoordinatorEntity[BydDataUpdateCoordinator]):
     # Command helpers
     # ------------------------------------------------------------------
 
+    def _connectivity_hint(self) -> str:
+        """Suffix telling the user to check the connection when offline.
+
+        A command that fails while the T-Box has no signal is almost always
+        connectivity, not a real rejection — point at that instead of leaving
+        a bare error (e.g. "close windows" failing because the car is out of
+        coverage).
+        """
+        realtime = self._get_realtime()
+        online = getattr(realtime, "is_online", None) if realtime is not None else None
+        status = getattr(self.coordinator, "connection_status", None)
+        if online is False or status in ("unreachable", "rate_limited"):
+            return (
+                " — the car looks offline (weak signal / no coverage); "
+                "check its connection and retry once it is reachable"
+            )
+        return ""
+
     def _command_pin_error_message(self) -> str:
         """Return a user-facing error message for command PIN issues."""
         if self.coordinator.has_pin_configured:
@@ -197,13 +215,15 @@ class BydVehicleEntity(CoordinatorEntity[BydDataUpdateCoordinator]):
             schedule_refresh = True
         except BydRemoteControlError as exc:
             code = getattr(exc, "code", None)
+            hint = self._connectivity_hint()
             if code in ("timeout", "no_serial"):
+                tail = hint or " — try again"
                 msg = (
                     f"{command}: the car didn't confirm the command "
-                    "(it may be asleep or offline) — try again"
+                    f"(it may be asleep or offline){tail}"
                 )
             else:
-                msg = f"{command}: the car rejected the command ({exc})"
+                msg = f"{command}: the car rejected the command ({exc}){hint}"
             _LOGGER.warning(
                 "%s command not confirmed: %s (code=%s)", command, exc, code
             )
@@ -227,7 +247,9 @@ class BydVehicleEntity(CoordinatorEntity[BydDataUpdateCoordinator]):
             _LOGGER.warning("%s command blocked: %s", command, exc)
             raise HomeAssistantError(msg) from exc
         except Exception as exc:  # noqa: BLE001
-            raise HomeAssistantError(str(exc)) from exc
+            raise HomeAssistantError(
+                f"{command}: {exc}{self._connectivity_hint()}"
+            ) from exc
         if schedule_refresh:
             self._schedule_post_action_refresh(command)
 
