@@ -2468,10 +2468,15 @@ class BydDataUpdateCoordinator(DataUpdateCoordinator[VehicleSnapshot]):
 
     @property
     def minutes_since_last_data(self) -> float | None:
-        """Minutes since the last successful HTTP fetch (None if never)."""
-        if self._last_successful_fetch_at is None:
+        """Minutes since we last received ANY data (fetch or MQTT push)."""
+        candidates = [
+            t
+            for t in (self._last_successful_fetch_at, self._last_mqtt_push_at)
+            if t is not None
+        ]
+        if not candidates:
             return None
-        delta = datetime.now(tz=UTC) - self._last_successful_fetch_at
+        delta = datetime.now(tz=UTC) - max(candidates)
         return round(delta.total_seconds() / 60.0, 1)
 
     @property
@@ -2549,6 +2554,11 @@ class BydDataUpdateCoordinator(DataUpdateCoordinator[VehicleSnapshot]):
                 self._vin[-6:],
                 result,
             )
+            # Count on-demand/force fetches as data received too, so the
+            # connection_status "minutes since data" reflects them and not
+            # only the scheduled-poll path.
+            self._last_successful_fetch_at = datetime.now(tz=UTC)
+            self._consecutive_fetch_failures = 0
             self.async_set_updated_data(self._car.state)
         except Exception as exc:  # noqa: BLE001
             _LOGGER.warning(
