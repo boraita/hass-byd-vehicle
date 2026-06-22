@@ -77,6 +77,9 @@ _HA_EVENT_OFFLINE_DRIVE: str = f"{DOMAIN}_offline_drive"
 # sentinel garbage and ignored.
 _MIN_OFFLINE_DRIVE_KM: float = 1.0
 _MAX_OFFLINE_DRIVE_KM: float = 2000.0
+# Below this distance an ON→OFF cycle is a park/maneuver, not a trip — don't
+# record it (0 km hops with 0 % SoC were ~27% of recorded "trips").
+_MIN_TRIP_KM: float = 1.0
 
 # Trip snapshots persist across HA restarts so a restart mid-trip does
 # not lose the power-on baseline (SoC/odometer at trip start).
@@ -597,6 +600,12 @@ class BydDataUpdateCoordinator(DataUpdateCoordinator[VehicleSnapshot]):
         self._polling_enabled = True
         self._force_next_refresh = False
         self._car: BydCar | None = None
+        # Authoritative last-known power state, kept on the instance so a
+        # power on/off edge is acted on exactly once no matter which path
+        # (MQTT push or scheduled poll) observes it — both call
+        # _maybe_handle_state_transitions, and keying off the snapshot's
+        # "previous" let the same edge fire twice (duplicate trips/events).
+        self._last_power_on: bool | None = None
         self._realtime_endpoint_unsupported: bool = False
         self._energy_supported: bool | None = None
         self._charge_session_started_at: datetime | None = None
@@ -1454,15 +1463,21 @@ class BydDataUpdateCoordinator(DataUpdateCoordinator[VehicleSnapshot]):
                 return False
             return None  # missing / UNKNOWN / sentinel payload
 
-        prev_power = _power_on(previous)
         new_power = _power_on(current)
-        if prev_power is not None and new_power is not None and prev_power != new_power:
-            self._handle_power_transition(is_on=new_power, snapshot=current)
+        # Dedupe against the authoritative tracked state, not the snapshot's
+        # "previous": the same edge is otherwise seen by both the push and the
+        # poll path and fires twice. A ``None`` reading (sentinel/sleeping
+        # payload) is ignored so it can't clobber the known state.
+        if new_power is not None and new_power != self._last_power_on:
+            if self._last_power_on is not None:
+                # A genuine edge (not the very first observation at startup).
+                self._handle_power_transition(is_on=new_power, snapshot=current)
+            self._last_power_on = new_power
         else:
             # No power flank this step.  If the odometer nonetheless jumped,
             # the car was driven while we were blind (cloud blackout / long
             # sleep-gap) and we never saw vehicle_on — recover that drive.
-            self._maybe_detect_offline_drive(previous, current, prev_power, new_power)
+            self._maybe_detect_offline_drive(previous, current, self._last_power_on)
 
         self._maybe_fire_capability_changes(previous, current)
 
@@ -1470,20 +1485,19 @@ class BydDataUpdateCoordinator(DataUpdateCoordinator[VehicleSnapshot]):
         self,
         previous: VehicleSnapshot,
         current: VehicleSnapshot,
-        prev_power: bool | None,
-        new_power: bool | None,
+        last_power_on: bool | None,
     ) -> None:
         """Infer + announce a drive that happened entirely between two polls.
 
         Fires :event:`byd_vehicle_offline_drive` (and records the distance in
         the trip history) when the odometer advanced by a real margin while
-        the car looked powered-off in both snapshots — so a blackout/sleep-gap
-        drive isn't silently lost. May be an aggregate of several drives; it's
-        marked ``inferred`` and cannot be decomposed.
+        the car was known powered-off — so a blackout/sleep-gap drive isn't
+        silently lost. May be an aggregate of several drives; it's marked
+        ``inferred`` and cannot be decomposed.
         """
-        # Only when we did NOT observe the car powered on either side — a real
-        # tracked trip already covers the on→…→off case.
-        if prev_power is True or new_power is True:
+        # Only when the car was known powered-off — a real tracked trip
+        # already covers the on→…→off case.
+        if last_power_on is True:
             return
         if previous.realtime is None or current.realtime is None:
             return
@@ -1623,7 +1637,13 @@ class BydDataUpdateCoordinator(DataUpdateCoordinator[VehicleSnapshot]):
                 end_odometer=odometer,
                 end_soc=soc,
             )
-            if trip is not None:
+            trip_distance = trip.get("distance_km") if trip is not None else None
+            is_real_trip = (
+                trip is not None
+                and isinstance(trip_distance, (int, float))
+                and trip_distance >= _MIN_TRIP_KM
+            )
+            if trip is not None and is_real_trip:
                 self._trip_data["last_trip"] = trip
                 payload["trip"] = trip
                 # Append to a capped rolling history for the aggregate
