@@ -683,6 +683,7 @@ class BydDataUpdateCoordinator(DataUpdateCoordinator[VehicleSnapshot]):
         self._last_mqtt_push_at = datetime.now(tz=UTC)
         self._schedule_hvac_final_reconcile_if_needed(previous_snapshot, snapshot)
         self._track_charge_session(previous_snapshot, snapshot)
+        self._track_total_charge(snapshot)
         self._track_efficiency_window(snapshot)
         self._track_distance_anchors(snapshot)
         self._maybe_fire_phase_changed(previous_snapshot, snapshot)
@@ -1206,6 +1207,7 @@ class BydDataUpdateCoordinator(DataUpdateCoordinator[VehicleSnapshot]):
         # Adapt next poll interval based on the just-observed state.
         self._apply_adaptive_interval(snapshot)
         self._track_charge_session(previous_snapshot, snapshot)
+        self._track_total_charge(snapshot)
         self._track_efficiency_window(snapshot)
         self._track_distance_anchors(snapshot)
         self._maybe_fire_phase_changed(previous_snapshot, snapshot)
@@ -2326,20 +2328,41 @@ class BydDataUpdateCoordinator(DataUpdateCoordinator[VehicleSnapshot]):
         )
         if len(self._charge_sessions) > 10:
             self._charge_sessions = self._charge_sessions[-10:]
+        # NOTE: the lifetime total_charge_kwh counter is maintained by
+        # _track_total_charge (SoC-rise integrator), NOT here — the
+        # session-close path was fragile (missed charges across restarts /
+        # unclean closes).
 
-        # Accumulate a lifetime charge-energy counter for the HA Energy
-        # dashboard.  Persisted in the trip store so it survives restarts.
-        # Coarse (SoC-delta × pack nameplate, same basis as kwh_added) — the
-        # only car-side energy figure the cloud gives us — but monotonic and
-        # TOTAL_INCREASING, which is what the Energy dashboard consumes.
-        if kwh_added:
-            self._trip_data["total_charge_kwh"] = round(
-                float(self._trip_data.get("total_charge_kwh", 0.0)) + kwh_added, 2
-            )
-            if self._trip_store_loaded:
-                self._trip_store.async_delay_save(
-                    lambda: dict(self._trip_data), _TRIP_STORE_SAVE_DELAY_SECONDS
+    def _track_total_charge(self, current: VehicleSnapshot) -> None:
+        """Accumulate lifetime charge energy from SoC rises while charging.
+
+        Robust alternative to the old session-close accumulation: on every
+        snapshot, while charging, add (SoC rise since the last reading) × pack
+        to ``total_charge_kwh``. The SoC anchor is persisted so a restart
+        mid-charge doesn't drop the gain across the gap; it's cleared when not
+        charging so a driving SoC drop is never counted. Feeds the Energy
+        dashboard + the battery side of the charging-efficiency meters.
+        """
+        soc = self._read_soc(current)
+        if soc is None:
+            return
+        td = self._trip_data
+        if not self._is_charging(current):
+            if td.get("charge_soc_anchor") is not None:
+                td["charge_soc_anchor"] = None
+            return
+        anchor = td.get("charge_soc_anchor")
+        if isinstance(anchor, (int, float)) and soc > anchor:
+            gain = self._soc_to_kwh(soc - anchor)
+            if gain:
+                td["total_charge_kwh"] = round(
+                    float(td.get("total_charge_kwh", 0.0)) + gain, 2
                 )
+        td["charge_soc_anchor"] = float(soc)
+        if self._trip_store_loaded:
+            self._trip_store.async_delay_save(
+                lambda: dict(td), _TRIP_STORE_SAVE_DELAY_SECONDS
+            )
 
     @property
     def total_charge_kwh(self) -> float | None:
