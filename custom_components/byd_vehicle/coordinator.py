@@ -1087,13 +1087,7 @@ class BydDataUpdateCoordinator(DataUpdateCoordinator[VehicleSnapshot]):
                 )
                 self._realtime_endpoint_unsupported = True
         except _RECOVERABLE_ERRORS as exc:
-            self._consecutive_fetch_failures += 1
-            # Track 1008 bursts specifically so the adaptive interval can back
-            # off; a non-busy recoverable error resets the busy streak.
-            if isinstance(exc, BydServiceBusyError):
-                self._service_busy_streak += 1
-            else:
-                self._service_busy_streak = 0
+            self._note_fetch_failure(exc)
             _LOGGER.warning(
                 "Realtime fetch failed: vin=%s, error=%s, consecutive_failures=%d, "
                 "service_busy_streak=%d",
@@ -1168,9 +1162,7 @@ class BydDataUpdateCoordinator(DataUpdateCoordinator[VehicleSnapshot]):
         # a multi-hour outage (903 consecutive 1008/500 errors observed
         # 2026-05-25 night without the connectivity binary_sensor noticing).
         if realtime_fetch_succeeded:
-            self._last_successful_fetch_at = datetime.now(tz=UTC)
-            self._consecutive_fetch_failures = 0
-            self._service_busy_streak = 0
+            self._note_fetch_success()
 
         # Mark the first non-sentinel payload — used by the adaptive
         # interval to know when to stop aggressive startup polling.
@@ -2456,6 +2448,25 @@ class BydDataUpdateCoordinator(DataUpdateCoordinator[VehicleSnapshot]):
         """
         return self._last_energy_fetch_status
 
+    def _note_fetch_success(self) -> None:
+        """Record a successful realtime fetch (scheduled OR on-demand).
+
+        Single owner of the success-side health counters so every fetch path
+        updates them identically — scattering this previously left force-poll
+        fetches with a stale ``minutes_since_data`` and a stuck ``rate_limited``.
+        """
+        self._last_successful_fetch_at = datetime.now(tz=UTC)
+        self._consecutive_fetch_failures = 0
+        self._service_busy_streak = 0
+
+    def _note_fetch_failure(self, exc: Exception) -> None:
+        """Record a failed realtime fetch. Tracks 1008 bursts separately."""
+        self._consecutive_fetch_failures += 1
+        if isinstance(exc, BydServiceBusyError):
+            self._service_busy_streak += 1
+        else:
+            self._service_busy_streak = 0
+
     @property
     def is_cloud_responsive(self) -> bool:
         """Whether the cloud has been responding recently.
@@ -2574,13 +2585,15 @@ class BydDataUpdateCoordinator(DataUpdateCoordinator[VehicleSnapshot]):
                 self._vin[-6:],
                 result,
             )
-            # Count on-demand/force fetches as data received too, so the
-            # connection_status "minutes since data" reflects them and not
-            # only the scheduled-poll path.
-            self._last_successful_fetch_at = datetime.now(tz=UTC)
-            self._consecutive_fetch_failures = 0
+            # Count on-demand/force fetches identically to scheduled polls
+            # (resets BOTH failure counters — fixes a stuck rate_limited after
+            # a successful force-poll during a 1008 burst).
+            self._note_fetch_success()
             self.async_set_updated_data(self._car.state)
         except Exception as exc:  # noqa: BLE001
+            # Record the failure too, so failed on-demand / wake-loop fetches
+            # move the health counters instead of silently diverging.
+            self._note_fetch_failure(exc)
             _LOGGER.warning(
                 "Service fetch_realtime failed: vin=%s, error=%s",
                 self._vin,
