@@ -42,6 +42,7 @@ from pybyd.config import BydConfig, DeviceProfile
 from pybyd.models.realtime import PowerGear
 from pybyd.models.vehicle import Vehicle
 
+from . import _logic
 from .const import (
     CONF_BASE_URL,
     CONF_CONTROL_PIN,
@@ -1419,29 +1420,15 @@ class BydDataUpdateCoordinator(DataUpdateCoordinator[VehicleSnapshot]):
 
     @staticmethod
     def _soc_to_kwh(soc_delta: float | None) -> float | None:
-        """Coarse energy (kWh) from a SoC delta × pack nameplate.
-
-        Single owner of the SoC→kWh conversion. Sign is PRESERVED (a negative
-        delta = net regen/charge yields negative kWh); callers that don't want
-        negative energy gate on the delta before calling.
-        """
-        if not isinstance(soc_delta, (int, float)):
-            return None
-        return round(soc_delta * _DEFAULT_BATTERY_KWH / 100.0, 2)
+        """SoC delta → kWh (delegates to the pure, tested _logic helper)."""
+        return _logic.soc_to_kwh(soc_delta, _DEFAULT_BATTERY_KWH)
 
     @staticmethod
     def _efficiency_per_100km(
         energy_kwh: float | None, distance_km: float | None
     ) -> float | None:
-        """kWh/100km from energy + distance; None unless both are positive."""
-        if (
-            isinstance(energy_kwh, (int, float))
-            and energy_kwh > 0
-            and isinstance(distance_km, (int, float))
-            and distance_km > 0
-        ):
-            return round(energy_kwh / distance_km * 100.0, 1)
-        return None
+        """kWh/100km (delegates to the pure, tested _logic helper)."""
+        return _logic.efficiency_per_100km(energy_kwh, distance_km)
 
     @staticmethod
     def _is_charging(snap: VehicleSnapshot | None) -> bool:
@@ -1976,20 +1963,9 @@ class BydDataUpdateCoordinator(DataUpdateCoordinator[VehicleSnapshot]):
         long = self._efficiency_over(self._EFFICIENCY_WINDOW_KM)
         if not short or not long or long <= 0:
             return
-        ratio = short / long
-        state = self._consumption_trend
-        if state in (None, "steady"):
-            if ratio < 0.90:
-                state = "improving"
-            elif ratio > 1.10:
-                state = "worsening"
-            else:
-                state = "steady"
-        elif state == "improving" and ratio > 0.95:
-            state = "steady"
-        elif state == "worsening" and ratio < 1.05:
-            state = "steady"
-        self._consumption_trend = state
+        self._consumption_trend = _logic.next_trend_state(
+            self._consumption_trend, short / long
+        )
 
     @property
     def consumption_trend(self) -> str | None:
