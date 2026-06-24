@@ -88,6 +88,10 @@ _MIN_ENERGY_TRIP_KM: float = 3.0
 # A SoC rise larger than this (%) between samples means a charge happened —
 # reset the efficiency window (efficiency measured across a charge is bogus).
 _EFFICIENCY_SOC_RISE_RESET = 2.0
+# Cap (hours) on the gap between two charge-power samples that we integrate.
+# A longer gap = lost samples (polling paused/outage) — skip it rather than
+# extrapolate a stale power rectangle across it.
+_CHARGE_POWER_MAX_GAP_H = 0.5
 
 # Trip snapshots persist across HA restarts so a restart mid-trip does
 # not lose the power-on baseline (SoC/odometer at trip start).
@@ -627,6 +631,10 @@ class BydDataUpdateCoordinator(DataUpdateCoordinator[VehicleSnapshot]):
         self._charging_off_since: datetime | None = None
         self._charge_curve: list[dict[str, Any]] = []
         self._charge_sessions: list[dict[str, Any]] = []
+        # Power-integration of battery charge energy (finer than 1% SoC steps):
+        # last sample's time + power (kW) while charging.
+        self._charge_power_last_at: datetime | None = None
+        self._charge_power_last_kw: float | None = None
         # Rolling (odometer_km, soc_pct) samples for the trailing-window
         # efficiency sensor.  In-memory; rebuilds over the window distance
         # after a restart.  Trimmed to the last _EFFICIENCY_WINDOW_KM.
@@ -684,6 +692,7 @@ class BydDataUpdateCoordinator(DataUpdateCoordinator[VehicleSnapshot]):
         self._schedule_hvac_final_reconcile_if_needed(previous_snapshot, snapshot)
         self._track_charge_session(previous_snapshot, snapshot)
         self._track_total_charge(snapshot)
+        self._track_charge_power_integral(snapshot)
         self._track_efficiency_window(snapshot)
         self._track_distance_anchors(snapshot)
         self._maybe_fire_phase_changed(previous_snapshot, snapshot)
@@ -1208,6 +1217,7 @@ class BydDataUpdateCoordinator(DataUpdateCoordinator[VehicleSnapshot]):
         self._apply_adaptive_interval(snapshot)
         self._track_charge_session(previous_snapshot, snapshot)
         self._track_total_charge(snapshot)
+        self._track_charge_power_integral(snapshot)
         self._track_efficiency_window(snapshot)
         self._track_distance_anchors(snapshot)
         self._maybe_fire_phase_changed(previous_snapshot, snapshot)
@@ -2363,6 +2373,53 @@ class BydDataUpdateCoordinator(DataUpdateCoordinator[VehicleSnapshot]):
             self._trip_store.async_delay_save(
                 lambda: dict(td), _TRIP_STORE_SAVE_DELAY_SECONDS
             )
+
+    def _track_charge_power_integral(self, current: VehicleSnapshot) -> None:
+        """Integrate battery charge power over time → energy into the battery.
+
+        Finer than the SoC-rise estimate (1% SoC ≈ 0.8 kWh): accumulates
+        ``power(kW) × Δt(h)`` (trapezoidal) on every sample while charging,
+        using ``realtime.gl`` (battery power, W). Gaps longer than
+        :data:`_CHARGE_POWER_MAX_GAP_H` are skipped (lost samples) rather than
+        extrapolated. Counter persisted in the trip store; reset of the sample
+        anchors when not charging. This is the higher-resolution "energy into
+        battery" figure for the charging-efficiency comparison.
+        """
+        now = datetime.now(tz=UTC)
+        gl = (
+            getattr(current.realtime, "gl", None)
+            if current.realtime is not None
+            else None
+        )
+        power_kw = (
+            round(abs(float(gl)) / 1000.0, 3) if isinstance(gl, (int, float)) else None
+        )
+        if not self._is_charging(current) or power_kw is None:
+            self._charge_power_last_at = None
+            self._charge_power_last_kw = None
+            return
+        last_at = self._charge_power_last_at
+        last_kw = self._charge_power_last_kw
+        if last_at is not None and last_kw is not None:
+            dt_h = (now - last_at).total_seconds() / 3600.0
+            if 0 < dt_h <= _CHARGE_POWER_MAX_GAP_H:
+                energy = (power_kw + last_kw) / 2.0 * dt_h  # trapezoidal
+                td = self._trip_data
+                td["total_charge_kwh_integrated"] = round(
+                    float(td.get("total_charge_kwh_integrated", 0.0)) + energy, 3
+                )
+                if self._trip_store_loaded:
+                    self._trip_store.async_delay_save(
+                        lambda: dict(td), _TRIP_STORE_SAVE_DELAY_SECONDS
+                    )
+        self._charge_power_last_at = now
+        self._charge_power_last_kw = power_kw
+
+    @property
+    def total_charge_energy_integrated_kwh(self) -> float | None:
+        """Lifetime energy into the battery from power×time integration (kWh)."""
+        val = self._trip_data.get("total_charge_kwh_integrated")
+        return round(float(val), 2) if isinstance(val, (int, float)) else None
 
     @property
     def total_charge_kwh(self) -> float | None:
