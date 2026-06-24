@@ -1418,6 +1418,32 @@ class BydDataUpdateCoordinator(DataUpdateCoordinator[VehicleSnapshot]):
         return None
 
     @staticmethod
+    def _soc_to_kwh(soc_delta: float | None) -> float | None:
+        """Coarse energy (kWh) from a SoC delta × pack nameplate.
+
+        Single owner of the SoC→kWh conversion. Sign is PRESERVED (a negative
+        delta = net regen/charge yields negative kWh); callers that don't want
+        negative energy gate on the delta before calling.
+        """
+        if not isinstance(soc_delta, (int, float)):
+            return None
+        return round(soc_delta * _DEFAULT_BATTERY_KWH / 100.0, 2)
+
+    @staticmethod
+    def _efficiency_per_100km(
+        energy_kwh: float | None, distance_km: float | None
+    ) -> float | None:
+        """kWh/100km from energy + distance; None unless both are positive."""
+        if (
+            isinstance(energy_kwh, (int, float))
+            and energy_kwh > 0
+            and isinstance(distance_km, (int, float))
+            and distance_km > 0
+        ):
+            return round(energy_kwh / distance_km * 100.0, 1)
+        return None
+
+    @staticmethod
     def _is_charging(snap: VehicleSnapshot | None) -> bool:
         """True when the snapshot's charging endpoint reports charging_state 1."""
         if snap is None or snap.charging is None:
@@ -1550,12 +1576,12 @@ class BydDataUpdateCoordinator(DataUpdateCoordinator[VehicleSnapshot]):
             if isinstance(prev_soc, (int, float)) and isinstance(cur_soc, (int, float))
             else None
         )
-        energy_kwh = None
-        efficiency = None
-        if isinstance(soc_used, (int, float)) and soc_used > 0:
-            energy_kwh = round(soc_used * _DEFAULT_BATTERY_KWH / 100.0, 2)
-            if distance > 0:
-                efficiency = round(energy_kwh / distance * 100.0, 1)
+        # Offline path suppresses negative energy (gate on soc_used > 0).
+        positive_soc = (
+            soc_used if isinstance(soc_used, (int, float)) and soc_used > 0 else None
+        )
+        energy_kwh = self._soc_to_kwh(positive_soc)
+        efficiency = self._efficiency_per_100km(energy_kwh, distance)
 
         now = datetime.now(tz=UTC)
         trip = {
@@ -1739,22 +1765,12 @@ class BydDataUpdateCoordinator(DataUpdateCoordinator[VehicleSnapshot]):
         # the SoC-based estimate is the honest approximation available here.
         # A negative soc_used (net regen / charged-while-on) yields negative
         # energy, which we surface as-is but skip for the efficiency figure.
-        soc_used = summary["soc_used"]
-        distance = summary["distance_km"]
-        if isinstance(soc_used, (int, float)):
-            summary["energy_kwh"] = round(soc_used * _DEFAULT_BATTERY_KWH / 100.0, 2)
-        else:
-            summary["energy_kwh"] = None
-        energy = summary["energy_kwh"]
-        if (
-            isinstance(energy, (int, float))
-            and energy > 0
-            and isinstance(distance, (int, float))
-            and distance > 0
-        ):
-            summary["efficiency_kwh_per_100km"] = round(energy / distance * 100.0, 1)
-        else:
-            summary["efficiency_kwh_per_100km"] = None
+        # Trip path SURFACES negative energy (net regen); efficiency helper
+        # still excludes it.
+        summary["energy_kwh"] = self._soc_to_kwh(summary["soc_used"])
+        summary["efficiency_kwh_per_100km"] = self._efficiency_per_100km(
+            summary["energy_kwh"], summary["distance_km"]
+        )
         return summary
 
     def _maybe_fire_capability_changes(
@@ -1946,7 +1962,7 @@ class BydDataUpdateCoordinator(DataUpdateCoordinator[VehicleSnapshot]):
         soc_used = start[1] - end_soc
         if soc_used <= 0:
             return None
-        return (soc_used * _DEFAULT_BATTERY_KWH / 100.0) / distance * 100.0
+        return self._efficiency_per_100km(self._soc_to_kwh(soc_used), distance)
 
     def _update_consumption_trend(self) -> None:
         """Recompute the consumption-trend state with hysteresis.
@@ -2000,8 +2016,7 @@ class BydDataUpdateCoordinator(DataUpdateCoordinator[VehicleSnapshot]):
         soc_used = start_soc - end_soc
         if soc_used <= 0:
             return None
-        energy = soc_used * _DEFAULT_BATTERY_KWH / 100.0
-        return round(energy / distance * 100.0, 1)
+        return self._efficiency_per_100km(self._soc_to_kwh(soc_used), distance)
 
     def _track_distance_anchors(self, current: VehicleSnapshot) -> None:
         """Maintain start-of-day / start-of-month odometer anchors.
@@ -2104,9 +2119,7 @@ class BydDataUpdateCoordinator(DataUpdateCoordinator[VehicleSnapshot]):
             ):
                 dist_sum += dist
                 energy_sum += energy
-        if dist_sum <= 0:
-            return None
-        return round(energy_sum / dist_sum * 100.0, 1)
+        return self._efficiency_per_100km(energy_sum, dist_sum)
 
     @property
     def driving_streak_days(self) -> int | None:
@@ -2295,7 +2308,7 @@ class BydDataUpdateCoordinator(DataUpdateCoordinator[VehicleSnapshot]):
         kwh_added = None
         if start_soc is not None and end_soc is not None:
             soc_added = round(max(0.0, float(end_soc) - float(start_soc)), 1)
-            kwh_added = round(soc_added * 82.5 / 100.0, 2)
+            kwh_added = self._soc_to_kwh(soc_added)
         powers = [kw for s in self._charge_curve if (kw := s.get("kw")) is not None]
         avg_kw = round(sum(powers) / len(powers), 2) if powers else None
         self._charge_sessions.append(
@@ -2382,7 +2395,7 @@ class BydDataUpdateCoordinator(DataUpdateCoordinator[VehicleSnapshot]):
         soc_added = self.charge_session_soc_added
         if soc_added is None:
             return None
-        return round(soc_added * _DEFAULT_BATTERY_KWH / 100.0, 2)
+        return self._soc_to_kwh(soc_added)
 
     @property
     def time_until_full_minutes(self) -> int | None:
