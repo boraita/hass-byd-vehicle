@@ -63,3 +63,45 @@ def next_trend_state(prev: str | None, ratio: float) -> str:
     if prev == "worsening" and ratio < _TREND_EXIT_HIGH:
         return "steady"
     return prev
+
+
+# --- Remote-command error mapping (pure: strings only, no pyBYD types) -------
+PASSWORD_MESSAGES: dict[str, str] = {
+    "5006": "Cloud control temporarily locked by BYD — try again later",
+    "commands_disabled": "Command access not verified — reconfigure your Control PIN",
+    "5005": "Command PIN is wrong — reconfigure the integration",
+}
+REMOTE_UNCONFIRMED_CODES = frozenset({"timeout", "no_serial"})
+
+# How the caller should fold in the connectivity hint after the base message.
+HINT_NONE = "none"
+HINT_APPEND = "append"
+HINT_APPEND_OR_RETRY = "append_or_retry"
+
+
+def command_error(
+    kind: str, command: str, code: str | None, exc_str: str
+) -> tuple[str, str]:
+    """Map a failed remote command to (base_message, hint_mode).
+
+    Pure — the caller classifies the exception into ``kind`` ("remote_control"
+    / "password" / "unsupported" / "generic") and appends the connectivity
+    hint per the returned mode. Keeps the exact wording + the "try again"
+    fallback for unconfirmed (asleep/offline) commands.
+    """
+    if kind == "remote_control":
+        if code in REMOTE_UNCONFIRMED_CODES:
+            return (
+                f"{command}: the car didn't confirm the command "
+                "(it may be asleep or offline)",
+                HINT_APPEND_OR_RETRY,
+            )
+        return (f"{command}: the car rejected the command ({exc_str})", HINT_APPEND)
+    if kind == "password":
+        return (
+            PASSWORD_MESSAGES.get(code, f"Command PIN error: {exc_str}"),
+            HINT_NONE,
+        )
+    if kind == "unsupported":
+        return ("This command is not supported by your vehicle", HINT_NONE)
+    return (f"{command}: {exc_str}", HINT_APPEND)

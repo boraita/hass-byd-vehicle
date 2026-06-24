@@ -21,6 +21,7 @@ from pybyd.models.hvac import HvacStatus
 from pybyd.models.realtime import VehicleRealtimeData
 from pybyd.models.vehicle import Vehicle
 
+from . import _logic
 from .const import DOMAIN
 from .coordinator import BydDataUpdateCoordinator, get_vehicle_display
 
@@ -209,49 +210,43 @@ class BydVehicleEntity(CoordinatorEntity[BydDataUpdateCoordinator]):
         """
         if not self.coordinator.has_operation_pin:
             raise HomeAssistantError(self._command_pin_error_message())
-        schedule_refresh = False
         try:
             await coro
-            schedule_refresh = True
         except BydRemoteControlError as exc:
-            code = getattr(exc, "code", None)
-            hint = self._connectivity_hint()
-            if code in ("timeout", "no_serial"):
-                tail = hint or " — try again"
-                msg = (
-                    f"{command}: the car didn't confirm the command "
-                    f"(it may be asleep or offline){tail}"
-                )
-            else:
-                msg = f"{command}: the car rejected the command ({exc}){hint}"
-            _LOGGER.warning(
-                "%s command not confirmed: %s (code=%s)", command, exc, code
-            )
             # pyBYD already rolled back the optimistic projection, so the
-            # reported state stays honest; surface the failure to the user
-            # instead of pretending it worked.
-            raise HomeAssistantError(msg) from exc
-        except BydControlPasswordError as exc:
-            if exc.code == "5006":
-                msg = "Cloud control temporarily locked by BYD — try again later"
-            elif exc.code == "commands_disabled":
-                msg = "Command access not verified — reconfigure your Control PIN"
-            elif exc.code == "5005":
-                msg = "Command PIN is wrong — reconfigure the integration"
-            else:
-                msg = f"Command PIN error: {exc}"
-            _LOGGER.warning("%s command failed: %s (code=%s)", command, msg, exc.code)
-            raise HomeAssistantError(msg) from exc
-        except BydEndpointNotSupportedError as exc:
-            msg = "This command is not supported by your vehicle"
-            _LOGGER.warning("%s command blocked: %s", command, exc)
-            raise HomeAssistantError(msg) from exc
-        except Exception as exc:  # noqa: BLE001
-            raise HomeAssistantError(
-                f"{command}: {exc}{self._connectivity_hint()}"
+            # reported state stays honest; surface the failure honestly.
+            raise self._command_error(
+                "remote_control", command, exc, getattr(exc, "code", None)
             ) from exc
-        if schedule_refresh:
-            self._schedule_post_action_refresh(command)
+        except BydControlPasswordError as exc:
+            raise self._command_error(
+                "password", command, exc, getattr(exc, "code", None)
+            ) from exc
+        except BydEndpointNotSupportedError as exc:
+            raise self._command_error("unsupported", command, exc, None) from exc
+        except Exception as exc:  # noqa: BLE001
+            raise self._command_error("generic", command, exc, None) from exc
+        self._schedule_post_action_refresh(command)
+
+    def _command_error(
+        self, kind: str, command: str, exc: Exception, code: str | None
+    ) -> HomeAssistantError:
+        """Build the user-facing error for a failed command.
+
+        Classification (the exception type → ``kind``) lives here; the pure
+        message mapping + the connectivity-hint folding live in ``_logic`` so
+        the wording is unit-tested without HA.
+        """
+        base, mode = _logic.command_error(kind, command, code, str(exc))
+        hint = self._connectivity_hint()
+        if mode == _logic.HINT_APPEND_OR_RETRY:
+            msg = base + (hint or " — try again")
+        elif mode == _logic.HINT_APPEND:
+            msg = base + hint
+        else:
+            msg = base
+        _LOGGER.warning("%s command failed: %s (code=%s)", command, msg, code)
+        return HomeAssistantError(msg)
 
     def _schedule_post_action_refresh(self, command: str) -> None:
         """Schedule a one-shot force-poll after a successful command.

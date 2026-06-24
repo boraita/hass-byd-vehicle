@@ -81,5 +81,37 @@ class TestTrendFsm(unittest.TestCase):
         self.assertEqual(logic.next_trend_state("worsening", 1.04), "steady")
 
 
+class TestCommandError(unittest.TestCase):
+    def test_remote_unconfirmed(self):
+        base, mode = logic.command_error("remote_control", "lock", "timeout", "boom")
+        self.assertIn("didn't confirm", base)
+        self.assertEqual(mode, logic.HINT_APPEND_OR_RETRY)
+
+    def test_remote_rejected(self):
+        base, mode = logic.command_error("remote_control", "lock", "9001", "rejected")
+        self.assertIn("rejected the command (rejected)", base)
+        self.assertEqual(mode, logic.HINT_APPEND)
+
+    def test_password_known_code(self):
+        base, mode = logic.command_error("password", "lock", "5005", "x")
+        self.assertEqual(base, "Command PIN is wrong — reconfigure the integration")
+        self.assertEqual(mode, logic.HINT_NONE)
+
+    def test_password_unknown_code(self):
+        base, mode = logic.command_error("password", "lock", "9999", "boom")
+        self.assertEqual(base, "Command PIN error: boom")
+        self.assertEqual(mode, logic.HINT_NONE)
+
+    def test_unsupported(self):
+        base, mode = logic.command_error("unsupported", "lock", None, "x")
+        self.assertIn("not supported", base)
+        self.assertEqual(mode, logic.HINT_NONE)
+
+    def test_generic(self):
+        base, mode = logic.command_error("generic", "lock", None, "weird")
+        self.assertEqual(base, "lock: weird")
+        self.assertEqual(mode, logic.HINT_APPEND)
+
+
 if __name__ == "__main__":
     unittest.main()
