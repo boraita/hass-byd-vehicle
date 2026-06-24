@@ -81,6 +81,13 @@ _MAX_OFFLINE_DRIVE_KM: float = 2000.0
 # Below this distance an ON→OFF cycle is a park/maneuver, not a trip — don't
 # record it (0 km hops with 0 % SoC were ~27% of recorded "trips").
 _MIN_TRIP_KM: float = 1.0
+# Below this distance the integer-SoC resolution can't measure energy: a 1 km
+# trip crossing a 1 % boundary reads as 0.82 kWh = 82 kWh/100km (or 0). Record
+# the distance but leave energy/efficiency unknown rather than publish garbage.
+_MIN_ENERGY_TRIP_KM: float = 3.0
+# A SoC rise larger than this (%) between samples means a charge happened —
+# reset the efficiency window (efficiency measured across a charge is bogus).
+_EFFICIENCY_SOC_RISE_RESET = 2.0
 
 # Trip snapshots persist across HA restarts so a restart mid-trip does
 # not lose the power-on baseline (SoC/odometer at trip start).
@@ -1590,9 +1597,16 @@ class BydDataUpdateCoordinator(DataUpdateCoordinator[VehicleSnapshot]):
             if isinstance(prev_soc, (int, float)) and isinstance(cur_soc, (int, float))
             else None
         )
-        # Offline path suppresses negative energy (gate on soc_used > 0).
+        # Offline path suppresses negative energy (gate on soc_used > 0) and,
+        # like the trip path, skips energy on sub-_MIN_ENERGY_TRIP_KM distances.
         positive_soc = (
-            soc_used if isinstance(soc_used, (int, float)) and soc_used > 0 else None
+            soc_used
+            if (
+                isinstance(soc_used, (int, float))
+                and soc_used > 0
+                and distance >= _MIN_ENERGY_TRIP_KM
+            )
+            else None
         )
         energy_kwh = self._soc_to_kwh(positive_soc)
         efficiency = self._efficiency_per_100km(energy_kwh, distance)
@@ -1754,8 +1768,13 @@ class BydDataUpdateCoordinator(DataUpdateCoordinator[VehicleSnapshot]):
         # A negative soc_used (net regen / charged-while-on) yields negative
         # energy, which we surface as-is but skip for the efficiency figure.
         # Trip path SURFACES negative energy (net regen); efficiency helper
-        # still excludes it.
-        summary["energy_kwh"] = self._soc_to_kwh(summary["soc_used"])
+        # still excludes it. Skip energy entirely on sub-_MIN_ENERGY_TRIP_KM
+        # trips — integer SoC can't measure them (1 km → 82 kWh/100km garbage).
+        _dist = summary["distance_km"]
+        if isinstance(_dist, (int, float)) and _dist >= _MIN_ENERGY_TRIP_KM:
+            summary["energy_kwh"] = self._soc_to_kwh(summary["soc_used"])
+        else:
+            summary["energy_kwh"] = None
         summary["efficiency_kwh_per_100km"] = self._efficiency_per_100km(
             summary["energy_kwh"], summary["distance_km"]
         )
@@ -1917,9 +1936,13 @@ class BydDataUpdateCoordinator(DataUpdateCoordinator[VehicleSnapshot]):
             if odo_f < last_odo:
                 # Odometer went backwards (sentinel/glitch) — reset.
                 window.clear()
+            elif soc_f - last_soc >= _EFFICIENCY_SOC_RISE_RESET:
+                # SoC jumped up = a charge happened. Efficiency measured across
+                # a charge is bogus (undercounts), so start a fresh window.
+                window.clear()
             elif odo_f == last_odo:
-                # No movement: refresh the latest SoC in place so a SoC
-                # rise while parked/charging doesn't look like consumption.
+                # No movement: refresh the latest SoC in place so a small SoC
+                # rise while parked doesn't look like consumption.
                 window[-1] = (odo_f, soc_f)
                 return
         window.append((odo_f, soc_f))
