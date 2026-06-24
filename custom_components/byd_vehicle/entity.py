@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from typing import Any
 
 from homeassistant.exceptions import HomeAssistantError
@@ -92,6 +93,24 @@ class BydVehicleEntity(CoordinatorEntity[BydDataUpdateCoordinator]):
         snap = self._snapshot()
         return snap.energy if snap is not None else None
 
+    # Exact ``source`` token → snapshot-section resolver. Prefix families
+    # (``energy_*``, ``charging_schedule_*``) are handled after this table in
+    # _get_source_obj, so exact "energy"/"charging_schedule" win over them.
+    _EXACT_SOURCE_RESOLVERS: dict[str, Callable[[BydVehicleEntity], Any]] = {
+        "realtime": lambda self: self._get_realtime(),
+        "hvac": lambda self: self._get_hvac_status(),
+        "gps": lambda self: self._get_gps(),
+        "energy": lambda self: self._get_energy(),
+        "charging": lambda self: (
+            s.charging if (s := self._snapshot()) is not None else None
+        ),
+        "vehicle": lambda self: (
+            s.vehicle if (s := self._snapshot()) is not None else self._vehicle
+        ),
+        "coordinator": lambda self: self.coordinator,
+        "snapshot": lambda self: self._snapshot(),
+    }
+
     def _get_source_obj(self, source: str = "realtime") -> Any | None:
         """Return the snapshot section for the given *source* string.
 
@@ -103,24 +122,9 @@ class BydVehicleEntity(CoordinatorEntity[BydDataUpdateCoordinator]):
         ``"charging_schedule_journey"``, ``"snapshot"`` (the full
         :class:`VehicleSnapshot` for cross-section merged value_fn lookups).
         """
-        if source == "realtime":
-            return self._get_realtime()
-        if source == "hvac":
-            return self._get_hvac_status()
-        if source == "gps":
-            return self._get_gps()
-        if source == "energy":
-            return self._get_energy()
-        if source == "charging":
-            snap = self._snapshot()
-            return snap.charging if snap is not None else None
-        if source == "vehicle":
-            snap = self._snapshot()
-            return snap.vehicle if snap is not None else self._vehicle
-        if source == "coordinator":
-            return self.coordinator
-        if source == "snapshot":
-            return self._snapshot()
+        resolver = self._EXACT_SOURCE_RESOLVERS.get(source)
+        if resolver is not None:
+            return resolver(self)
         if source.startswith("energy_"):
             energy = self._get_energy()
             if energy is None:
