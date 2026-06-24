@@ -4,7 +4,8 @@ Optional Home-Assistant setup that shows, per period (week / month / year)
 and per session:
 
 - **kWh from the charger** — *exact*, measured by a smart wallbox/EVSE.
-- **kWh into the battery** — *estimated* from the car's SoC (`ΔSoC × pack`).
+- **kWh into the battery** — *estimated* by integrating the battery charge
+  power over time (`Σ power × Δt`, finer than 1 % SoC steps).
 - **Average charging efficiency** = battery ÷ charger (≈ **85–90 %** on AC).
 
 It is **not** part of the integration code — it's a HA *package* (template
@@ -14,14 +15,18 @@ adapting the entity IDs below.
 
 ## What the integration provides (no setup)
 
-- `sensor.byd_<model>_total_charge_energy` — lifetime kWh into the battery,
-  `total_increasing`. Accumulated by the coordinator's **SoC-rise integrator**
-  (`_track_total_charge`): on every poll *while charging* it adds
-  `(SoC rise since last reading) × pack`. The anchor is persisted (survives
-  restarts) and cleared when not charging (a driving SoC drop is never
-  counted). This is the **battery side** of the efficiency.
-  - Pack nameplate is `_DEFAULT_BATTERY_KWH` in `coordinator.py` (82.5 kWh for
-    the Sealion 7 Comfort). Change it for other trims/models.
+- `sensor.byd_<model>_total_charge_energy_integrated` — lifetime kWh into the
+  battery, `total_increasing`, from **power integration** (`_track_charge_
+  power_integral`): while charging it accumulates `power(kW) × Δt(h)`
+  (trapezoidal) from `realtime.gl`. **Higher resolution** than 1 % SoC steps —
+  this is the preferred **battery side** of the efficiency. Gaps > 0.5 h are
+  skipped (lost samples); counter persisted. *(Enable it — disabled by
+  default.)*
+- `sensor.byd_<model>_total_charge_energy` — coarser fallback: lifetime kWh
+  via the **SoC-rise integrator** (`(SoC rise) × pack` while charging, anchor
+  persisted). Good enough for the HA Energy dashboard; less precise on short
+  charges. Pack nameplate `_DEFAULT_BATTERY_KWH` in `coordinator.py` (82.5 kWh
+  Sealion 7 Comfort — change per model).
 - `sensor.byd_<model>_charge_session_kwh_added` / `_soc_added` — per-session.
 
 ## Prerequisites
@@ -43,15 +48,16 @@ with yours, then restart HA (or reload templates + restart for the meters).
 
 ```yaml
 # Replace:
-#   sensor.evse_192_168_0_229_charge_energy  -> your wallbox per-session kWh
-#   sensor.byd_sealion_7_total_charge_energy -> your byd_<model>_total_charge_energy
+#   sensor.evse_192_168_0_229_charge_energy             -> your wallbox per-session kWh
+#   sensor.byd_sealion_7_total_charge_energy_integrated -> your byd_<model>_total_charge_energy_integrated
+#   (the battery side uses the power-integrated counter; enable that sensor)
 utility_meter:
   byd_charger_kwh_weekly:  { source: sensor.evse_192_168_0_229_charge_energy,  cycle: weekly,  name: BYD charger kWh weekly }
   byd_charger_kwh_monthly: { source: sensor.evse_192_168_0_229_charge_energy,  cycle: monthly, name: BYD charger kWh monthly }
   byd_charger_kwh_yearly:  { source: sensor.evse_192_168_0_229_charge_energy,  cycle: yearly,  name: BYD charger kWh yearly }
-  byd_battery_kwh_weekly:  { source: sensor.byd_sealion_7_total_charge_energy, cycle: weekly,  name: BYD battery kWh weekly }
-  byd_battery_kwh_monthly: { source: sensor.byd_sealion_7_total_charge_energy, cycle: monthly, name: BYD battery kWh monthly }
-  byd_battery_kwh_yearly:  { source: sensor.byd_sealion_7_total_charge_energy, cycle: yearly,  name: BYD battery kWh yearly }
+  byd_battery_kwh_weekly:  { source: sensor.byd_sealion_7_total_charge_energy_integrated, cycle: weekly,  name: BYD battery kWh weekly }
+  byd_battery_kwh_monthly: { source: sensor.byd_sealion_7_total_charge_energy_integrated, cycle: monthly, name: BYD battery kWh monthly }
+  byd_battery_kwh_yearly:  { source: sensor.byd_sealion_7_total_charge_energy_integrated, cycle: yearly,  name: BYD battery kWh yearly }
 
 template:
   - sensor:
@@ -137,9 +143,12 @@ cards:
 ## How to read it / gotchas
 
 - **Average efficiency ≈ 85–90 %** is normal for AC charging (onboard-charger
-  losses). The **period (week/month/year)** figures are the trustworthy ones;
-  the **live per-session** efficiency is noisy because cloud SoC is integer
-  (a 1 % step = ~0.8 kWh) and a single session is small.
+  losses). The **period (week/month/year)** figures are the trustworthy ones.
+- **Battery side = power integration** (`total_charge_energy_integrated`,
+  `Σ power × Δt` while charging) — finer than 1 % SoC steps (a 1 % step ≈
+  0.8 kWh, too coarse for a per-charge comparison). Accuracy depends on the
+  poll cadence during charging: more frequent samples = a better integral.
+  The SoC-based `total_charge_energy` remains as a coarser fallback.
 - **Why not ~100 %?** It used to read ~100 % because the *battery side* (SoC ×
   pack) ≈ the AC delivered. That's only meaningful as an efficiency when the
   battery side actually captures **all** the charging — which is why the
