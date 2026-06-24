@@ -1380,6 +1380,50 @@ class BydDataUpdateCoordinator(DataUpdateCoordinator[VehicleSnapshot]):
             return "plugged_idle"
         return "unknown"
 
+    @staticmethod
+    def _read_odo(snap: VehicleSnapshot | None) -> float | None:
+        """Odometer (km) from a snapshot as a float, or None if absent.
+
+        Single reader for the ``realtime.total_mileage`` access duplicated
+        across the trip / distance / efficiency algorithms. Does NOT filter
+        0 — callers that treat 0 as a sentinel keep their own checks.
+        """
+        if snap is None or snap.realtime is None:
+            return None
+        val = getattr(snap.realtime, "total_mileage", None)
+        return float(val) if isinstance(val, (int, float)) else None
+
+    @staticmethod
+    def _read_soc(
+        snap: VehicleSnapshot | None, prefer: str = "charging"
+    ) -> float | None:
+        """SoC (%) from a snapshot, or None.
+
+        ``prefer="charging"`` (default) reads ``charging.soc`` then falls back
+        to ``realtime.elec_percent`` — correct while charging (charging
+        endpoint is fresh). ``prefer="realtime"`` reverses it — correct while
+        driving (the charging endpoint isn't polled, so realtime is fresher).
+        Uses ``is not None`` so a genuine 0 % isn't skipped.
+        """
+        if snap is None:
+            return None
+        ch = getattr(snap, "charging", None)
+        rt = getattr(snap, "realtime", None)
+        ch_soc = getattr(ch, "soc", None) if ch is not None else None
+        rt_soc = getattr(rt, "elec_percent", None) if rt is not None else None
+        order = (rt_soc, ch_soc) if prefer == "realtime" else (ch_soc, rt_soc)
+        for s in order:
+            if s is not None:
+                return float(s)
+        return None
+
+    @staticmethod
+    def _is_charging(snap: VehicleSnapshot | None) -> bool:
+        """True when the snapshot's charging endpoint reports charging_state 1."""
+        if snap is None or snap.charging is None:
+            return False
+        return getattr(snap.charging, "charging_state", None) == 1
+
     def _maybe_handle_state_transitions(
         self,
         previous: VehicleSnapshot | None,
@@ -1491,31 +1535,16 @@ class BydDataUpdateCoordinator(DataUpdateCoordinator[VehicleSnapshot]):
         # already covers the on→…→off case.
         if last_power_on is True:
             return
-        if previous.realtime is None or current.realtime is None:
+        prev_odo = self._read_odo(previous)
+        cur_odo = self._read_odo(current)
+        if prev_odo is None or cur_odo is None:
             return
-        prev_odo = getattr(previous.realtime, "total_mileage", None)
-        cur_odo = getattr(current.realtime, "total_mileage", None)
-        if not isinstance(prev_odo, (int, float)) or not isinstance(
-            cur_odo, (int, float)
-        ):
-            return
-        distance = round(float(cur_odo) - float(prev_odo), 1)
+        distance = round(cur_odo - prev_odo, 1)
         if distance < _MIN_OFFLINE_DRIVE_KM or distance > _MAX_OFFLINE_DRIVE_KM:
             return
 
-        def _soc(snap: VehicleSnapshot) -> float | None:
-            if snap.charging is not None:
-                s = getattr(snap.charging, "soc", None)
-                if s is not None:
-                    return float(s)
-            if snap.realtime is not None:
-                s = getattr(snap.realtime, "elec_percent", None)
-                if s is not None:
-                    return float(s)
-            return None
-
-        prev_soc = _soc(previous)
-        cur_soc = _soc(current)
+        prev_soc = self._read_soc(previous)
+        cur_soc = self._read_soc(current)
         soc_used = (
             round(prev_soc - cur_soc, 1)
             if isinstance(prev_soc, (int, float)) and isinstance(cur_soc, (int, float))
@@ -1585,14 +1614,8 @@ class BydDataUpdateCoordinator(DataUpdateCoordinator[VehicleSnapshot]):
         (MQTT push when the car is online, next poll otherwise).
         """
         now = datetime.now(tz=UTC)
-        soc: Any = None
-        odometer: Any = None
-        if snapshot.charging is not None:
-            soc = getattr(snapshot.charging, "soc", None)
-        if snapshot.realtime is not None:
-            odometer = getattr(snapshot.realtime, "total_mileage", None)
-            if soc is None:
-                soc = getattr(snapshot.realtime, "elec_percent", None)
+        soc = self._read_soc(snapshot)
+        odometer = self._read_odo(snapshot)
         latitude: Any = None
         longitude: Any = None
         if snapshot.gps is not None:
@@ -1878,17 +1901,12 @@ class BydDataUpdateCoordinator(DataUpdateCoordinator[VehicleSnapshot]):
         kept when both odometer and SoC are present and the odometer has
         advanced (skips parked/charging noise and SoC rises from charging).
         """
-        odo: Any = None
-        soc: Any = None
-        if current.realtime is not None:
-            odo = getattr(current.realtime, "total_mileage", None)
-            soc = getattr(current.realtime, "elec_percent", None)
-        if soc is None and current.charging is not None:
-            soc = getattr(current.charging, "soc", None)
-        if not isinstance(odo, (int, float)) or not isinstance(soc, (int, float)):
+        # Realtime-first SoC: during a drive the charging endpoint isn't
+        # polled, so realtime.elec_percent is the fresher value here.
+        odo_f = self._read_odo(current)
+        soc_f = self._read_soc(current, prefer="realtime")
+        if odo_f is None or soc_f is None:
             return
-        odo_f = float(odo)
-        soc_f = float(soc)
         window = self._efficiency_window
         if window:
             last_odo, last_soc = window[-1]
@@ -1993,10 +2011,8 @@ class BydDataUpdateCoordinator(DataUpdateCoordinator[VehicleSnapshot]):
         month" survive restarts and roll over cleanly at midnight / the 1st.
         The anchor is the first odometer reading seen in that period.
         """
-        if current.realtime is None:
-            return
-        odo = getattr(current.realtime, "total_mileage", None)
-        if not isinstance(odo, (int, float)) or odo <= 0:
+        odo = self._read_odo(current)
+        if odo is None or odo <= 0:
             return
         now_local = dt_util.now()
         day_key = now_local.date().isoformat()
@@ -2023,13 +2039,10 @@ class BydDataUpdateCoordinator(DataUpdateCoordinator[VehicleSnapshot]):
         if not isinstance(anchor, dict):
             return None
         start = anchor.get("odo")
-        snap = self.data
-        if snap is None or snap.realtime is None:
+        odo = self._read_odo(self.data)
+        if not isinstance(start, (int, float)) or odo is None:
             return None
-        odo = getattr(snap.realtime, "total_mileage", None)
-        if not isinstance(start, (int, float)) or not isinstance(odo, (int, float)):
-            return None
-        return round(max(0.0, float(odo) - float(start)), 1)
+        return round(max(0.0, odo - float(start)), 1)
 
     @property
     def distance_today_km(self) -> float | None:
@@ -2145,27 +2158,9 @@ class BydDataUpdateCoordinator(DataUpdateCoordinator[VehicleSnapshot]):
         shorter than the window does not end the current session.
         """
 
-        def _is_charging(snap: VehicleSnapshot | None) -> bool:
-            if snap is None or snap.charging is None:
-                return False
-            return getattr(snap.charging, "charging_state", None) == 1
-
-        def _current_soc(snap: VehicleSnapshot | None) -> float | None:
-            if snap is None:
-                return None
-            if snap.charging is not None:
-                soc = getattr(snap.charging, "soc", None)
-                if soc is not None:
-                    return float(soc)
-            if snap.realtime is not None:
-                soc = getattr(snap.realtime, "elec_percent", None)
-                if soc is not None:
-                    return float(soc)
-            return None
-
         now = datetime.now(tz=UTC)
-        was = _is_charging(previous)
-        now_charging = _is_charging(current)
+        was = self._is_charging(previous)
+        now_charging = self._is_charging(current)
 
         if now_charging and not was:
             # Resume vs new session: if the previous OFF window fell
@@ -2178,7 +2173,7 @@ class BydDataUpdateCoordinator(DataUpdateCoordinator[VehicleSnapshot]):
             )
             if not (within_coalesce and self._charge_session_started_at is not None):
                 self._charge_session_started_at = now
-                self._charge_session_start_soc = _current_soc(current)
+                self._charge_session_start_soc = self._read_soc(current)
                 self._charge_curve = []
             self._charging_off_since = None
 
@@ -2197,13 +2192,13 @@ class BydDataUpdateCoordinator(DataUpdateCoordinator[VehicleSnapshot]):
             and (now - self._charging_off_since).total_seconds()
             >= self._CHARGE_SESSION_COALESCE_WINDOW_SECONDS
         ):
-            self._record_finished_session(current, _current_soc(current))
+            self._record_finished_session(current, self._read_soc(current))
             self._charge_session_started_at = None
             self._charge_session_start_soc = None
             self._charging_off_since = None
 
         if now_charging:
-            soc = _current_soc(current)
+            soc = self._read_soc(current)
             power = None
             if current.realtime is not None:
                 gl = getattr(current.realtime, "gl", None)
@@ -2259,12 +2254,12 @@ class BydDataUpdateCoordinator(DataUpdateCoordinator[VehicleSnapshot]):
         after power-off it naturally freezes at the trip total.
         """
         start = self.trip_start_odometer
-        if start is None or self.data is None or self.data.realtime is None:
+        if start is None:
             return None
-        current = getattr(self.data.realtime, "total_mileage", None)
-        if not isinstance(current, (int, float)) or current < start:
+        current = self._read_odo(self.data)
+        if current is None or current < start:
             return None
-        return round(float(current) - start, 1)
+        return round(current - start, 1)
 
     @property
     def last_trip(self) -> dict[str, Any] | None:
@@ -2367,11 +2362,7 @@ class BydDataUpdateCoordinator(DataUpdateCoordinator[VehicleSnapshot]):
         """SoC percentage points gained since the session started."""
         if self._charge_session_start_soc is None or self.data is None:
             return None
-        current_soc = None
-        if self.data.charging is not None:
-            current_soc = getattr(self.data.charging, "soc", None)
-        if current_soc is None and self.data.realtime is not None:
-            current_soc = getattr(self.data.realtime, "elec_percent", None)
+        current_soc = self._read_soc(self.data)
         if current_soc is None:
             return None
         delta = float(current_soc) - self._charge_session_start_soc
@@ -2405,9 +2396,7 @@ class BydDataUpdateCoordinator(DataUpdateCoordinator[VehicleSnapshot]):
         if getattr(self.data.charging, "charging_state", None) != 1:
             return None
         # SoC remaining
-        soc = getattr(self.data.charging, "soc", None)
-        if soc is None and self.data.realtime is not None:
-            soc = getattr(self.data.realtime, "elec_percent", None)
+        soc = self._read_soc(self.data)
         if soc is None or soc >= 100:
             return None
         remaining_soc = 100.0 - float(soc)
