@@ -60,4 +60,5 @@ Entity updates are cloud-polled, poll intervals are exposed as entities and can 
 ## Documentation
 
 - Troubleshooting: [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md)
+- Charge & consumption analytics (charger vs battery + efficiency): [docs/CHARGE_ANALYTICS.md](docs/CHARGE_ANALYTICS.md)
 - Contributing: [docs/CONTRIBUTING.md](docs/CONTRIBUTING.md)
