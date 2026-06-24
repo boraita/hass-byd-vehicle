@@ -1450,6 +1450,27 @@ class BydDataUpdateCoordinator(DataUpdateCoordinator[VehicleSnapshot]):
             return False
         return getattr(snap.charging, "charging_state", None) == 1
 
+    def _record_trip_history(
+        self, trip: dict[str, Any], *, inferred: bool = False
+    ) -> None:
+        """Append a compact trip record to the capped rolling history.
+
+        Single owner of the history-entry shape + cap, shared by the real
+        power-off trip path and the inferred offline-drive path.
+        """
+        entry: dict[str, Any] = {
+            "started_at": trip.get("started_at"),
+            "distance_km": trip.get("distance_km"),
+            "energy_kwh": trip.get("energy_kwh"),
+            "efficiency_kwh_per_100km": trip.get("efficiency_kwh_per_100km"),
+        }
+        if inferred:
+            entry["inferred"] = True
+        history = self._trip_data.get("trip_history")
+        if not isinstance(history, list):
+            history = []
+        self._trip_data["trip_history"] = (history + [entry])[-_TRIP_HISTORY_MAX:]
+
     def _maybe_handle_state_transitions(
         self,
         previous: VehicleSnapshot | None,
@@ -1589,7 +1610,7 @@ class BydDataUpdateCoordinator(DataUpdateCoordinator[VehicleSnapshot]):
             "started_at": (
                 self._last_successful_fetch_at.isoformat()
                 if self._last_successful_fetch_at is not None
-                else None
+                else now.isoformat()
             ),
             "ended_at": now.isoformat(),
             "start_odometer": float(prev_odo),
@@ -1599,19 +1620,7 @@ class BydDataUpdateCoordinator(DataUpdateCoordinator[VehicleSnapshot]):
             "energy_kwh": energy_kwh,
             "efficiency_kwh_per_100km": efficiency,
         }
-        history = self._trip_data.get("trip_history")
-        if not isinstance(history, list):
-            history = []
-        history.append(
-            {
-                "started_at": trip["started_at"] or now.isoformat(),
-                "distance_km": distance,
-                "energy_kwh": energy_kwh,
-                "efficiency_kwh_per_100km": efficiency,
-                "inferred": True,
-            }
-        )
-        self._trip_data["trip_history"] = history[-_TRIP_HISTORY_MAX:]
+        self._record_trip_history(trip, inferred=True)
         if self._trip_store_loaded:
             self._trip_store.async_delay_save(
                 lambda: dict(self._trip_data), _TRIP_STORE_SAVE_DELAY_SECONDS
@@ -1687,23 +1696,9 @@ class BydDataUpdateCoordinator(DataUpdateCoordinator[VehicleSnapshot]):
             if trip is not None and is_real_trip:
                 self._trip_data["last_trip"] = trip
                 payload["trip"] = trip
-                # Append to a capped rolling history for the aggregate
-                # stats sensors (monthly distance, streak, 30-day average,
-                # seasonal penalty).  Only keep the compact fields we use.
-                history = self._trip_data.get("trip_history")
-                if not isinstance(history, list):
-                    history = []
-                history.append(
-                    {
-                        "started_at": trip.get("started_at"),
-                        "distance_km": trip.get("distance_km"),
-                        "energy_kwh": trip.get("energy_kwh"),
-                        "efficiency_kwh_per_100km": trip.get(
-                            "efficiency_kwh_per_100km"
-                        ),
-                    }
-                )
-                self._trip_data["trip_history"] = history[-_TRIP_HISTORY_MAX:]
+                # Record into the capped rolling history for the aggregate
+                # stats sensors (shared with the offline-drive path).
+                self._record_trip_history(trip)
             _LOGGER.info(
                 "Vehicle powered OFF: vin=%s trip=%s",
                 self._vin[-6:],
