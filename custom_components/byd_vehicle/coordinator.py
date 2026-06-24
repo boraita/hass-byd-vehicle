@@ -1471,86 +1471,94 @@ class BydDataUpdateCoordinator(DataUpdateCoordinator[VehicleSnapshot]):
             history = []
         self._trip_data["trip_history"] = (history + [entry])[-_TRIP_HISTORY_MAX:]
 
+    @staticmethod
+    def _ota_active(snap: VehicleSnapshot | None) -> bool | None:
+        if snap is None or snap.realtime is None:
+            return None
+        val = getattr(snap.realtime, "upgrade_status", None)
+        if val is None:
+            return None
+        try:
+            return int(val) > 0
+        except (TypeError, ValueError):
+            return None
+
+    @staticmethod
+    def _plug_connected(snap: VehicleSnapshot | None) -> bool | None:
+        if snap is None:
+            return None
+        if snap.charging is not None:
+            state = getattr(snap.charging, "connect_state", None)
+            if state is not None:
+                return int(state) > 0
+        if snap.realtime is not None:
+            state = getattr(snap.realtime, "connect_state", None)
+            if state is not None:
+                return int(state) > 0
+        return None
+
+    @staticmethod
+    def _power_on(snap: VehicleSnapshot | None) -> bool | None:
+        if snap is None or snap.realtime is None:
+            return None
+        gear = getattr(snap.realtime, "power_gear", None)
+        if gear == PowerGear.ON:
+            return True
+        if gear == PowerGear.OFF:
+            return False
+        return None  # missing / UNKNOWN / sentinel payload
+
     def _maybe_handle_state_transitions(
         self,
         previous: VehicleSnapshot | None,
         current: VehicleSnapshot,
     ) -> None:
-        """React to ad-hoc state transitions by scheduling targeted refreshes.
-
-        - **OTA done** (upgrade_status on → off): the next regular poll won't
-          fetch the charging snapshot or firmware metadata for several
-          minutes, so the user sees stale values right after the OTA. Force
-          both immediately.
-        - **Plug-in** (plug off → on): same problem — charging state lives on
-          a separate endpoint that the regular poll doesn't hit. The user
-          wants ``charge_session_phase`` to flip to ``plugged_idle`` within
-          seconds of plugging in, not minutes.
-
-        Refreshes are fire-and-forget background tasks so we don't block
-        the main update path. They use ``async_create_task`` so failures
-        are isolated and logged but don't propagate.
-        """
+        """Run the post-update transition handlers — one concern each."""
         if previous is None:
             return
+        self._maybe_refresh_on_ota_done(previous, current)
+        self._maybe_refresh_on_plug_in(previous, current)
+        self._handle_power_edge(previous, current)
+        self._maybe_fire_capability_changes(previous, current)
 
-        def _ota_active(snap: VehicleSnapshot | None) -> bool | None:
-            if snap is None or snap.realtime is None:
-                return None
-            val = getattr(snap.realtime, "upgrade_status", None)
-            if val is None:
-                return None
-            try:
-                return int(val) > 0
-            except (TypeError, ValueError):
-                return None
-
-        def _plug_connected(snap: VehicleSnapshot | None) -> bool | None:
-            if snap is None:
-                return None
-            if snap.charging is not None:
-                state = getattr(snap.charging, "connect_state", None)
-                if state is not None:
-                    return int(state) > 0
-            if snap.realtime is not None:
-                state = getattr(snap.realtime, "connect_state", None)
-                if state is not None:
-                    return int(state) > 0
-            return None
-
-        prev_ota = _ota_active(previous)
-        new_ota = _ota_active(current)
-        if prev_ota is True and new_ota is False:
+    def _maybe_refresh_on_ota_done(
+        self, previous: VehicleSnapshot, current: VehicleSnapshot
+    ) -> None:
+        """OTA done (upgrade_status on→off): force a charging + firmware
+        refresh now — the next regular poll wouldn't for minutes."""
+        if self._ota_active(previous) is True and self._ota_active(current) is False:
             _LOGGER.info(
                 "OTA finished on vin=%s — refreshing charging + firmware",
                 self._vin[-6:],
             )
             self.hass.async_create_task(self._async_post_ota_refresh())
 
-        prev_plug = _plug_connected(previous)
-        new_plug = _plug_connected(current)
-        if prev_plug is False and new_plug is True:
+    def _maybe_refresh_on_plug_in(
+        self, previous: VehicleSnapshot, current: VehicleSnapshot
+    ) -> None:
+        """Plug-in (connect off→on): force a charging-snapshot refresh so
+        charge_session_phase flips within seconds, not minutes."""
+        if (
+            self._plug_connected(previous) is False
+            and self._plug_connected(current) is True
+        ):
             _LOGGER.info(
                 "Plug-in detected on vin=%s — refreshing charging snapshot",
                 self._vin[-6:],
             )
             self.hass.async_create_task(self._async_post_plug_refresh())
 
-        def _power_on(snap: VehicleSnapshot | None) -> bool | None:
-            if snap is None or snap.realtime is None:
-                return None
-            gear = getattr(snap.realtime, "power_gear", None)
-            if gear == PowerGear.ON:
-                return True
-            if gear == PowerGear.OFF:
-                return False
-            return None  # missing / UNKNOWN / sentinel payload
+    def _handle_power_edge(
+        self, previous: VehicleSnapshot, current: VehicleSnapshot
+    ) -> None:
+        """Power on/off edge (deduped) + offline-drive recovery when no edge.
 
-        new_power = _power_on(current)
-        # Dedupe against the authoritative tracked state, not the snapshot's
-        # "previous": the same edge is otherwise seen by both the push and the
-        # poll path and fires twice. A ``None`` reading (sentinel/sleeping
-        # payload) is ignored so it can't clobber the known state.
+        Dedupe against the authoritative tracked state, not the snapshot's
+        "previous": the same edge is otherwise seen by both the push and the
+        poll path and fires twice. A ``None`` reading (sentinel/sleeping
+        payload) is ignored so it can't clobber the known state.
+        """
+        new_power = self._power_on(current)
         if new_power is not None and new_power != self._last_power_on:
             if self._last_power_on is not None:
                 # A genuine edge (not the very first observation at startup).
@@ -1561,8 +1569,6 @@ class BydDataUpdateCoordinator(DataUpdateCoordinator[VehicleSnapshot]):
             # the car was driven while we were blind (cloud blackout / long
             # sleep-gap) and we never saw vehicle_on — recover that drive.
             self._maybe_detect_offline_drive(previous, current, self._last_power_on)
-
-        self._maybe_fire_capability_changes(previous, current)
 
     def _maybe_detect_offline_drive(
         self,
