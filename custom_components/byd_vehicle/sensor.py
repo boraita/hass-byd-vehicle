@@ -1054,6 +1054,20 @@ SENSOR_DESCRIPTIONS: tuple[BydSensorDescription, ...] = (
         icon="mdi:ev-station",
         entity_registry_enabled_default=False,
     ),
+    # Higher-resolution lifetime energy into the battery: power (gl) integrated
+    # over time while charging, instead of coarse 1% SoC steps. Better battery
+    # side for the charging-efficiency comparison.
+    BydSensorDescription(
+        key="total_charge_energy_integrated",
+        name="Total charge energy (integrated)",
+        source="coordinator",
+        value_fn=lambda c: c.total_charge_energy_integrated_kwh,
+        native_unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
+        device_class=SensorDeviceClass.ENERGY,
+        state_class=SensorStateClass.TOTAL_INCREASING,
+        icon="mdi:sigma",
+        entity_registry_enabled_default=False,
+    ),
     # Timestamp of the latest charging session start (i.e. the last time
     # ``charging.charging_state`` transitioned to 1).  Cleared on plug-out.
     # Useful for "how long has this charge been running" automations.
