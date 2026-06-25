@@ -122,7 +122,9 @@ cards:
     min: 70
     max: 100
     needle: true
-    severity: { green: 85, yellow: 80, red: 70 }
+    # Plateau is ~92–94 % (≥15 A); green from 90, amber when low-amp charging
+    # drags it down, red below ~80 %.
+    severity: { green: 90, yellow: 80, red: 70 }
   - type: entities
     title: Charging — charger vs battery
     entities:
@@ -140,10 +142,46 @@ cards:
       - sensor.byd_charge_efficiency_yearly
 ```
 
+## Reference: measured AC→battery efficiency curve (Sealion 7)
+
+Bench-measured on a real Sealion 7 (82.5 kWh pack) with a 1-phase V2C
+wallbox (~222 V), AC only, SoC 36→51 %. Efficiency = battery power (DC, from
+car telemetry) ÷ charger power (AC, from wallbox). Use this to sanity-check
+what the period gauges report:
+
+| Set | Real A | Charger (AC) | Battery (DC) | Loss | Efficiency |
+|----:|-------:|-------------:|-------------:|-----:|-----------:|
+|  6 A |  5.7 A | 1.265 kW | 1.026 kW | 0.239 kW | 81.1 % |
+| 10 A |  9.3 A | 2.066 kW | 1.824 kW | 0.242 kW | 88.3 % |
+| 11 A | 10.8 A | 2.399 kW | 2.231 kW | 0.168 kW | 93.0 % |
+| 12 A | 11.8 A | 2.619 kW | 2.460 kW | 0.159 kW | 93.9 % |
+| 15 A | 15.8 A | 3.513 kW | 3.318 kW | 0.196 kW | 94.4 % |
+| 16 A | 15.8 A | 3.518 kW | 3.255 kW | 0.263 kW | 92.5 % |
+| 20 A | 19.9 A | 4.427 kW | 4.126 kW | 0.302 kW | 93.2 % |
+| 21 A | 21.5 A | 4.767 kW | 4.527 kW | 0.241 kW | 95.0 % |
+| 25 A | 25.0 A | 5.539 kW | 5.157 kW | 0.382 kW | 93.1 % |
+| 30 A | 29.2 A | 6.480 kW | 6.017 kW | 0.463 kW | 92.8 % |
+| 31 A | 31.0 A | 6.882 kW | 6.418 kW | 0.464 kW | 93.1 % |
+
+*(Abridged from a 23-point sweep, 6→31 A.)*
+
+- **Plateau ~92.5–94 %** from 11 A to 31 A — no drop at the top of the range.
+- Efficiency falls **only at very low current**: ~88 % @ 10 A, ~81 % @ 6 A —
+  the charger's fixed overhead (electronics/BMS/cooling, ~0.16–0.25 kW)
+  dominates when charging power is small.
+- **Practical takeaway:** charge at **≥ 15 A for ~93 %**; avoid < 10 A.
+- *Precision note:* the DC figure is car telemetry (~±0.07 kW), so ±2–3 % at
+  low power; the 16–31 A points are very consistent.
+
+So the period gauges should read **~92–94 %** for normal home charging and
+dip toward ~85–88 % only if a lot of the energy went in at low amperage.
+
 ## How to read it / gotchas
 
-- **Average efficiency ≈ 85–90 %** is normal for AC charging (onboard-charger
-  losses). The **period (week/month/year)** figures are the trustworthy ones.
+- **Average efficiency ≈ 92–94 %** is normal for AC home charging at a decent
+  amperage (≥ 15 A); it dips to ~85–88 % only when much of the charge went in
+  at low current (see the reference curve above). The **period
+  (week/month/year)** figures are the trustworthy ones.
 - **Battery side = power integration** (`total_charge_energy_integrated`,
   `Σ power × Δt` while charging) — finer than 1 % SoC steps (a 1 % step ≈
   0.8 kWh, too coarse for a per-charge comparison). Accuracy depends on the
