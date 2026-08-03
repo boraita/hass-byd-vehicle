@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
@@ -28,6 +29,19 @@ from .const import DOMAIN
 from .coordinator import BydDataUpdateCoordinator
 from .entity import BydVehicleEntity
 
+_LOGGER = logging.getLogger(__name__)
+
+
+def _declared_function_nos(coordinator: BydDataUpdateCoordinator) -> frozenset[str]:
+    """Return the ``functionNo`` values the car declares in its latest config.
+
+    An empty set means "unknown", not "none declared" — callers must treat it
+    as *do not gate* (see ``required_function_no``).
+    """
+    capabilities = getattr(getattr(coordinator, "car", None), "capabilities", None)
+    values = getattr(capabilities, "function_nos", None) or ()
+    return frozenset(str(value) for value in values)
+
 
 @dataclass(frozen=True, kw_only=True)
 class BydBinarySensorDescription(BinarySensorEntityDescription):
@@ -36,6 +50,21 @@ class BydBinarySensorDescription(BinarySensorEntityDescription):
     source: str = "realtime"
     attr_key: str | None = None
     value_fn: Callable[[Any], bool | None] | None = None
+    required_function_no: str | None = None
+    """Latest-config ``functionNo`` the car must declare for this entity to
+    exist.
+
+    Gates hardware the payload cannot describe.  A car without the part still
+    sends the field — just never with a usable value — so the entity would
+    otherwise sit at a confident-looking ``off`` forever.  Concrete case:
+    ``skylight`` on a Sealion 7, whose panoramic roof is fixed glass.  The
+    windows report ``1`` (closed) while ``skylight`` reports ``0``, which is
+    not a ``WindowState`` member at all, so it parses to ``UNKNOWN`` and the
+    entity reads "closed" with a ``window`` device class.
+
+    Fails open: when the car reports no ``function_nos`` at all (latest-config
+    fetch failed, or the endpoint is unsupported for the VIN) the entity is
+    created, since absence of the list is not evidence the part is missing."""
 
 
 def _is_charging_from_realtime(obj: Any) -> bool | None:
@@ -371,6 +400,9 @@ BINARY_SENSOR_DESCRIPTIONS: tuple[BydBinarySensorDescription, ...] = (
         device_class=BinarySensorDeviceClass.WINDOW,
         value_fn=_attr_equals("skylight", WindowState.OPEN),
         entity_registry_enabled_default=False,
+        # ``10020001`` (天窗 / sunroof) under the ``1002`` door-window parent.
+        # Cars with a fixed glass roof omit it and send ``skylight: 0``.
+        required_function_no="10020001",
     ),
     # ====================================
     # Other (disabled)
@@ -665,7 +697,27 @@ async def async_setup_entry(
     entities: list[BinarySensorEntity] = []
     for vin, coordinator in coordinators.items():
         vehicle = coordinator.vehicle
+        declared = _declared_function_nos(coordinator)
         for description in BINARY_SENSOR_DESCRIPTIONS:
+            required = description.required_function_no
+            if required and declared and required not in declared:
+                # The car does not have this hardware.  Drop any entity a
+                # previous version already registered so it disappears
+                # instead of lingering as a restored "unavailable" row.
+                stale = registry.async_get_entity_id(
+                    "binary_sensor",
+                    DOMAIN,
+                    f"{vin}_{description.source}_{description.key}",
+                )
+                if stale:
+                    registry.async_remove(stale)
+                _LOGGER.debug(
+                    "Skipping %s for vin=%s: functionNo %s not declared",
+                    description.key,
+                    vin[-6:],
+                    required,
+                )
+                continue
             entities.append(BydBinarySensor(coordinator, vin, vehicle, description))
 
     async_add_entities(entities)

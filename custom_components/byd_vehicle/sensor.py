@@ -769,6 +769,44 @@ SENSOR_DESCRIPTIONS: tuple[BydSensorDescription, ...] = (
         entity_registry_enabled_default=False,
         entity_category=EntityCategory.DIAGNOSTIC,
     ),
+    # OTA availability signals from the vehicle-list payload.  ``tbox_version``
+    # only moves *after* an update is applied, so it cannot answer "is there an
+    # update waiting for me?".  These three fields can: the BYD app sends them
+    # on ``getAllListByUserId`` and they sit empty (``""``) on a car with
+    # nothing pending.
+    #
+    # Their exact populated form is UNCONFIRMED — no OTA has been offered while
+    # we were watching, so we surface the raw string verbatim rather than
+    # guessing a schema.  ``"none"`` is substituted for the empty sentinel so
+    # the state is a stable, triggerable value instead of an empty string.
+    # Automations should treat *any* transition away from ``none`` as
+    # "something OTA-related showed up" and read the attributes for detail.
+    BydSensorDescription(
+        key="ota_check",
+        name="OTA check",
+        source="vehicle",
+        icon="mdi:cloud-download-outline",
+        value_fn=lambda v: (
+            (str(v.raw.get("autoUpgradeCheck") or "").strip() or "none")
+            if v is not None and isinstance(getattr(v, "raw", None), dict)
+            else None
+        ),
+        state_attrs_fn=lambda v: (
+            {
+                "auto_upgrade_check": v.raw.get("autoUpgradeCheck"),
+                "not_upgrade_now_switch": v.raw.get("notUpgradeNowSwitch"),
+                "support_ota_night_upgrade": v.raw.get("supportOtaNightUpgrade"),
+                "ota_upgrade_capability": (v.raw.get("vehicleFunLearnInfo") or {}).get(
+                    "otaUpgrade"
+                ),
+            }
+            if v is not None and isinstance(getattr(v, "raw", None), dict)
+            else {}
+        ),
+        # Enabled by default, unlike the other diagnostics: an OTA notice is
+        # only useful if it is already being watched when it arrives.
+        entity_category=EntityCategory.DIAGNOSTIC,
+    ),
     # Capabilities snapshot — exposes the cloud-reported
     # ``vehicleFunLearnInfo`` dict as state attributes.  The dict carries
     # ~46 flags (NFC, OTA, battery heating variants, third row, sentry,
