@@ -15,6 +15,7 @@
           "gps_active_interval": "Intervallo GPS attivo (secondi)",
           "gps_inactive_interval": "Intervallo GPS inattivo (secondi)",
           "climate_duration": "Durata climatizzazione (intervallo)",
+          "mqtt_enabled": "Aggiornamenti push MQTT",
           "debug_dumps": "Dump di debug risposte API"
         }
       }
@@ -42,6 +43,7 @@
           "gps_active_interval": "Intervallo GPS attivo (secondi)",
           "gps_inactive_interval": "Intervallo GPS inattivo (secondi)",
           "climate_duration": "Durata climatizzazione (intervallo)",
+          "mqtt_enabled": "Aggiornamenti push MQTT",
           "debug_dumps": "Dump di debug risposte API"
         }
       }

@@ -15,6 +15,7 @@
           "gps_active_interval": "GPS aktiivinen väli (sekuntia)",
           "gps_inactive_interval": "GPS passiivinen väli (sekuntia)",
           "climate_duration": "Ilmastoinnin kesto (time_span)",
+          "mqtt_enabled": "MQTT-push-päivitykset",
           "debug_dumps": "API-vastausten virheenkorjausvedos"
         }
       }
@@ -42,6 +43,7 @@
           "gps_active_interval": "GPS aktiivinen väli (sekuntia)",
           "gps_inactive_interval": "GPS passiivinen väli (sekuntia)",
           "climate_duration": "Ilmastoinnin kesto (time_span)",
+          "mqtt_enabled": "MQTT-push-päivitykset",
           "debug_dumps": "API-vastausten virheenkorjausvedos"
         }
       }

@@ -15,6 +15,7 @@
           "gps_active_interval": "Abfrageintervall GPS Position aktives Fahrzeug (Sekunden)",
           "gps_inactive_interval": "Abfrageintervall GPS Position inaktives Fahrzeug (Sekunden)",
           "climate_duration": "Dauer der Klimatisierung (time_span)",
+          "mqtt_enabled": "MQTT-Push-Aktualisierungen",
           "debug_dumps": "API-Antworten als Debug-Dump"
         }
       }
@@ -42,6 +43,7 @@
           "gps_active_interval": "GPS Abfrageintervall aktives Fahrzeug (Sekunden)",
           "gps_inactive_interval": "GPS Abfrageintervall inaktives Fahrzeug (Sekunden)",
           "climate_duration": "Dauer der Klimatisierung (time_span)",
+          "mqtt_enabled": "MQTT-Push-Aktualisierungen",
           "debug_dumps": "API-Antworten als Debug-Dump"
         }
       }

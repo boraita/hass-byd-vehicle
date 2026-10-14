@@ -15,6 +15,7 @@
           "gps_active_interval": "GPS aktív időköz (mp)",
           "gps_inactive_interval": "GPS inaktív időköz (mp)",
           "climate_duration": "Klíma időtartam",
+          "mqtt_enabled": "MQTT push frissítések",
           "debug_dumps": "API válaszok mentése hibakereséshez"
         }
       }
@@ -42,6 +43,7 @@
           "gps_active_interval": "GPS aktív időköz (mp)",
           "gps_inactive_interval": "GPS inaktív időköz (mp)",
           "climate_duration": "Klíma időtartam",
+          "mqtt_enabled": "MQTT push frissítések",
           "debug_dumps": "API válaszok mentése hibakereséshez"
         }
       }

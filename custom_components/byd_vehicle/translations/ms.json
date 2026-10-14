@@ -15,6 +15,7 @@
           "gps_active_interval": "GPS selang aktif (saat)",
           "gps_inactive_interval": "GPS selang tidak aktif (saat)",
           "climate_duration": "Tempoh iklim (time_span)",
+          "mqtt_enabled": "Kemas kini tolak MQTT",
           "debug_dumps": "Buang nyahpepijat respons API"
         }
       }
@@ -42,6 +43,7 @@
           "gps_active_interval": "GPS selang aktif (saat)",
           "gps_inactive_interval": "GPS selang tidak aktif (saat)",
           "climate_duration": "Tempoh iklim (time_span)",
+          "mqtt_enabled": "Kemas kini tolak MQTT",
           "debug_dumps": "Buang nyahpepijat respons API"
         }
       }

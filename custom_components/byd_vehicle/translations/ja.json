@@ -15,6 +15,7 @@
           "gps_active_interval": "GPS アクティブな間隔 (秒)",
           "gps_inactive_interval": "GPS 非アクティブな間隔 (秒)",
           "climate_duration": "エアコン作動時間 (time_span)",
+          "mqtt_enabled": "MQTTプッシュ更新",
           "debug_dumps": "APIレスポンスのデバッグダンプ"
         }
       }
@@ -42,6 +43,7 @@
           "gps_active_interval": "GPS アクティブな間隔 (秒)",
           "gps_inactive_interval": "GPS 非アクティブな間隔 (秒)",
           "climate_duration": "エアコン作動時間 (time_span)",
+          "mqtt_enabled": "MQTTプッシュ更新",
           "debug_dumps": "APIレスポンスのデバッグダンプ"
         }
       }

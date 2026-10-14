@@ -15,6 +15,7 @@
           "gps_active_interval": "GPS aktif aralık (saniye)",
           "gps_inactive_interval": "GPS etkin olmayan süre (saniye)",
           "climate_duration": "Klima süresi (time_span)",
+          "mqtt_enabled": "MQTT anlık güncellemeleri",
           "debug_dumps": "API yanıtlarının hata ayıklama dökümü"
         }
       }
@@ -42,6 +43,7 @@
           "gps_active_interval": "GPS aktif aralık (saniye)",
           "gps_inactive_interval": "GPS etkin olmayan süre (saniye)",
           "climate_duration": "Klima süresi (time_span)",
+          "mqtt_enabled": "MQTT anlık güncellemeleri",
           "debug_dumps": "API yanıtlarının hata ayıklama dökümü"
         }
       }
