@@ -99,7 +99,7 @@ def command_error(
         return (f"{command}: the car rejected the command ({exc_str})", HINT_APPEND)
     if kind == "password":
         return (
-            PASSWORD_MESSAGES.get(code, f"Command PIN error: {exc_str}"),
+            PASSWORD_MESSAGES.get(code or "", f"Command PIN error: {exc_str}"),
             HINT_NONE,
         )
     if kind == "unsupported":

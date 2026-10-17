@@ -456,9 +456,6 @@
       },
       "start_charging": {
         "name": "Iniciar carga"
-      },
-      "stop_charging": {
-        "name": "Parar carga"
       }
     },
     "select": {
