@@ -21,6 +21,7 @@ from homeassistant.const import (
     PERCENTAGE,
     EntityCategory,
     UnitOfEnergy,
+    UnitOfEnergyDistance,
     UnitOfLength,
     UnitOfPower,
     UnitOfPressure,
@@ -444,36 +445,134 @@ def _eq_consumption_unit(snap: Any) -> Any:
     return getattr(nearest, "ev_unit", None) or None
 
 
-def _prefer_rt_then_energy(
-    rt_attr: str | None,
-    *energy_path: str,
-) -> Callable[[Any], Any]:
-    """Return ``snap.realtime.<rt_attr>`` if set, else navigate ``snap.energy``.
+_KM_PER_MILE = 1.609344
 
-    The realtime section is updated automatically every poll cycle while the
-    energy section is on-demand (via ``Fetch energy data``). Reading from
-    realtime first means merged sensors stay fresh between energy fetches;
-    falling back to the energy section keeps them populated when realtime
-    hasn't carried the value (or returned a sentinel).
+
+def _to_per_100km(value: Any, unit: Any) -> tuple[Any, Any]:
+    """Convert a per-100-miles consumption figure to per-100-km.
+
+    Units that are not per-100-miles pass through unchanged.
+    """
+    if not isinstance(unit, str) or value is None:
+        return value, unit
+    base, sep, distance = unit.rpartition("/")
+    if not sep or distance.lower() not in ("100mi", "100mile", "100miles"):
+        return value, unit
+    try:
+        converted = round(float(value) / _KM_PER_MILE, 1)
+    except (TypeError, ValueError):
+        return value, unit
+    return converted, f"{base}/100km"
+
+
+def _merged_consumption(
+    rt_attr: str,
+    rt_unit_attr: str,
+    energy_section: str,
+    energy_attr: str,
+    energy_unit_attr: str,
+) -> tuple[Callable[[Any], Any], Callable[[Any], str | None]]:
+    """Return (value_fn, unit_fn) for a realtime/energy merged consumption.
+
+    The value and unit are picked from the same source, then normalised to
+    per-100-km. The BYD cloud reports the realtime figure per 100 km while
+    the energy endpoint follows the car's display units, so without the
+    normalisation the unit flips with whichever source wins the poll, which
+    breaks long-term statistics (issue #181).
     """
 
-    def _convert(snap: Any) -> Any:
+    def _pair(snap: Any) -> tuple[Any, Any]:
         if snap is None:
-            return None
-        if rt_attr is not None:
-            rt = getattr(snap, "realtime", None)
-            if rt is not None:
-                value = getattr(rt, rt_attr, None)
-                if value is not None:
-                    return value
-        cur: Any = getattr(snap, "energy", None)
-        for part in energy_path:
-            if cur is None:
-                return None
-            cur = getattr(cur, part, None)
-        return cur
+            return None, None
+        rt = getattr(snap, "realtime", None)
+        if rt is not None:
+            value = getattr(rt, rt_attr, None)
+            if value is not None:
+                return _to_per_100km(value, getattr(rt, rt_unit_attr, None))
+        section = getattr(getattr(snap, "energy", None), energy_section, None)
+        if section is None:
+            return None, None
+        return _to_per_100km(
+            getattr(section, energy_attr, None),
+            getattr(section, energy_unit_attr, None),
+        )
 
-    return _convert
+    def _value(snap: Any) -> Any:
+        return _pair(snap)[0]
+
+    def _unit(snap: Any) -> str | None:
+        unit = _pair(snap)[1]
+        return unit if isinstance(unit, str) and unit else None
+
+    return _value, _unit
+
+
+_LAST_50KM_EV_VALUE, _LAST_50KM_EV_UNIT = _merged_consumption(
+    "energy_consumption_ev",
+    "energy_consumption_ev_unit",
+    "nearest_energy_consumption",
+    "avg_ev_consumption",
+    "ev_unit",
+)
+_LAST_50KM_FUEL_VALUE, _LAST_50KM_FUEL_UNIT = _merged_consumption(
+    "energy_consumption_fuel",
+    "energy_consumption_fuel_unit",
+    "nearest_energy_consumption",
+    "avg_oil_consumption",
+    "oil_unit",
+)
+_LIFETIME_EV_VALUE, _LIFETIME_EV_UNIT = _merged_consumption(
+    "total_consumption_en_ev",
+    "total_consumption_en_ev_unit",
+    "cumulative_energy_consumption",
+    "avg_ev_consumption",
+    "ev_unit",
+)
+_LIFETIME_FUEL_VALUE, _LIFETIME_FUEL_UNIT = _merged_consumption(
+    "total_consumption_en_fuel",
+    "total_consumption_en_fuel_unit",
+    "cumulative_energy_consumption",
+    "avg_oil_consumption",
+    "oil_unit",
+)
+
+
+def _lifetime_leg(rt: Any, field: str, leg: str, unit: str) -> Any:
+    """Return one leg of a lifetime rate in *unit*, or ``None``.
+
+    Reads pyBYD's per-leg split of *field* and converts per-100-miles
+    figures (``totalEnergy`` follows the car's display units). A leg in any
+    other unit yields ``None`` rather than a mislabelled figure.
+    """
+    value, leg_unit = _to_per_100km(
+        getattr(rt, f"{field}_{leg}", None), getattr(rt, f"{field}_{leg}_unit", None)
+    )
+    return value if leg_unit == unit else None
+
+
+def _lifetime_ev_rate(field: str) -> Callable[[Any], Any]:
+    """Create a value_fn for the EV leg of a lifetime rate, in kWh/100km.
+
+    A payload without an EV leg (pure ICE, or a hybrid reporting fuel only)
+    reads ``None``; its figure is in the fuel attributes.
+    """
+    unit = UnitOfEnergyDistance.KILO_WATT_HOUR_PER_100_KM
+    return lambda rt: _lifetime_leg(rt, field, "ev", unit)
+
+
+def _lifetime_fuel_rate_attrs(field: str) -> Callable[[Any], dict[str, Any]]:
+    """Create a state_attrs_fn exposing the fuel leg of a lifetime rate.
+
+    The attributes are absent when the payload has no fuel leg (BEVs).
+    """
+
+    def _get(rt: Any) -> dict[str, Any]:
+        value = _lifetime_leg(rt, field, "fuel", "L/100km")
+        if value is None:
+            return {}
+        return {"fuel_consumption": value, "fuel_consumption_unit": "L/100km"}
+
+    return _get
 
 
 SENSOR_DESCRIPTIONS: tuple[BydSensorDescription, ...] = (
@@ -554,9 +653,7 @@ SENSOR_DESCRIPTIONS: tuple[BydSensorDescription, ...] = (
         suggested_display_precision=0,
         device_class=SensorDeviceClass.TEMPERATURE,
         state_class=SensorStateClass.MEASUREMENT,
-        value_fn=lambda obj: (
-            int(round(obj.temp_in_car)) if obj.temp_in_car is not None else None
-        ),
+        value_fn=_round_int_attr("temp_in_car"),
         validator_fn=keep_previous_when_zero,
     ),
     # Per-window opening percentage (0-100).  Sealion 7 EU reports 10
@@ -1288,6 +1385,8 @@ SENSOR_DESCRIPTIONS: tuple[BydSensorDescription, ...] = (
         # Fuel/oil sensors are meaningless on a BEV — off by default.
         entity_registry_enabled_default=False,
     ),
+    # Unmapped despite the name: ``totalOil`` is ``0.0`` in every payload
+    # captured so far, hybrids included (issue #175).
     BydSensorDescription(
         key="total_oil",
         source="realtime",
@@ -1445,15 +1544,17 @@ SENSOR_DESCRIPTIONS: tuple[BydSensorDescription, ...] = (
     ),
     # ==========================================
     # Realtime: additional diagnostic sensors
-    #   (disabled by default — raw / unparsed)
+    #   (disabled by default)
     # ==========================================
     BydSensorDescription(
         key="total_energy",
         source="realtime",
         icon="mdi:flash",
+        native_unit_of_measurement=UnitOfEnergyDistance.KILO_WATT_HOUR_PER_100_KM,
         entity_registry_enabled_default=False,
         entity_category=EntityCategory.DIAGNOSTIC,
-        value_fn=_parse_numeric_string("total_energy"),
+        value_fn=_lifetime_ev_rate("total_energy"),
+        state_attrs_fn=_lifetime_fuel_rate_attrs("total_energy"),
     ),
     BydSensorDescription(
         key="nearest_energy_consumption_unit",
@@ -1485,7 +1586,7 @@ SENSOR_DESCRIPTIONS: tuple[BydSensorDescription, ...] = (
         entity_registry_enabled_default=False,
         entity_category=EntityCategory.DIAGNOSTIC,
     ),
-    # Energy consumption strings
+    # Energy consumption rates
     BydSensorDescription(
         key="energy_consumption",
         source="realtime",
@@ -1499,19 +1600,23 @@ SENSOR_DESCRIPTIONS: tuple[BydSensorDescription, ...] = (
         key="total_consumption",
         source="realtime",
         icon="mdi:lightning-bolt",
+        native_unit_of_measurement=UnitOfEnergyDistance.KILO_WATT_HOUR_PER_100_KM,
         state_class=SensorStateClass.MEASUREMENT,
         entity_registry_enabled_default=False,
         entity_category=EntityCategory.DIAGNOSTIC,
-        value_fn=_parse_numeric_string("total_consumption"),
+        value_fn=_lifetime_ev_rate("total_consumption"),
+        state_attrs_fn=_lifetime_fuel_rate_attrs("total_consumption"),
     ),
     BydSensorDescription(
         key="total_consumption_en",
         source="realtime",
         icon="mdi:lightning-bolt",
+        native_unit_of_measurement=UnitOfEnergyDistance.KILO_WATT_HOUR_PER_100_KM,
         state_class=SensorStateClass.MEASUREMENT,
         entity_registry_enabled_default=False,
         entity_category=EntityCategory.DIAGNOSTIC,
-        value_fn=_parse_numeric_string("total_consumption_en"),
+        value_fn=_lifetime_ev_rate("total_consumption_en"),
+        state_attrs_fn=_lifetime_fuel_rate_attrs("total_consumption_en"),
     ),
     # Warning indicators (as numeric sensors)
     BydSensorDescription(
@@ -1585,16 +1690,8 @@ SENSOR_DESCRIPTIONS: tuple[BydSensorDescription, ...] = (
     BydSensorDescription(
         key="last_50km_avg_ev_consumption",
         source="snapshot",
-        value_fn=_prefer_rt_then_energy(
-            "energy_consumption_ev",
-            "nearest_energy_consumption",
-            "avg_ev_consumption",
-        ),
-        unit_fn=_prefer_rt_then_energy(
-            "energy_consumption_ev_unit",
-            "nearest_energy_consumption",
-            "ev_unit",
-        ),
+        value_fn=_LAST_50KM_EV_VALUE,
+        unit_fn=_LAST_50KM_EV_UNIT,
         state_class=SensorStateClass.MEASUREMENT,
         icon="mdi:lightning-bolt",
         entity_registry_enabled_default=True,
@@ -1603,16 +1700,8 @@ SENSOR_DESCRIPTIONS: tuple[BydSensorDescription, ...] = (
     BydSensorDescription(
         key="last_50km_avg_fuel_consumption",
         source="snapshot",
-        value_fn=_prefer_rt_then_energy(
-            "energy_consumption_fuel",
-            "nearest_energy_consumption",
-            "avg_oil_consumption",
-        ),
-        unit_fn=_prefer_rt_then_energy(
-            "energy_consumption_fuel_unit",
-            "nearest_energy_consumption",
-            "oil_unit",
-        ),
+        value_fn=_LAST_50KM_FUEL_VALUE,
+        unit_fn=_LAST_50KM_FUEL_UNIT,
         state_class=SensorStateClass.MEASUREMENT,
         icon="mdi:gas-station",
         entity_registry_enabled_default=False,
@@ -1621,16 +1710,8 @@ SENSOR_DESCRIPTIONS: tuple[BydSensorDescription, ...] = (
     BydSensorDescription(
         key="lifetime_avg_ev_consumption",
         source="snapshot",
-        value_fn=_prefer_rt_then_energy(
-            "total_consumption_en_ev",
-            "cumulative_energy_consumption",
-            "avg_ev_consumption",
-        ),
-        unit_fn=_prefer_rt_then_energy(
-            "total_consumption_en_ev_unit",
-            "cumulative_energy_consumption",
-            "ev_unit",
-        ),
+        value_fn=_LIFETIME_EV_VALUE,
+        unit_fn=_LIFETIME_EV_UNIT,
         state_class=SensorStateClass.MEASUREMENT,
         icon="mdi:lightning-bolt",
         entity_registry_enabled_default=True,
@@ -1639,16 +1720,8 @@ SENSOR_DESCRIPTIONS: tuple[BydSensorDescription, ...] = (
     BydSensorDescription(
         key="lifetime_avg_fuel_consumption",
         source="snapshot",
-        value_fn=_prefer_rt_then_energy(
-            "total_consumption_en_fuel",
-            "cumulative_energy_consumption",
-            "avg_oil_consumption",
-        ),
-        unit_fn=_prefer_rt_then_energy(
-            "total_consumption_en_fuel_unit",
-            "cumulative_energy_consumption",
-            "oil_unit",
-        ),
+        value_fn=_LIFETIME_FUEL_VALUE,
+        unit_fn=_LIFETIME_FUEL_UNIT,
         state_class=SensorStateClass.MEASUREMENT,
         icon="mdi:gas-station",
         entity_registry_enabled_default=False,

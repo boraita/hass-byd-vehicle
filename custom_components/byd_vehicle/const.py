@@ -24,22 +24,32 @@ CONF_COUNTRY_CODE = "country_code"
 CONF_LANGUAGE = "language"
 CONF_POLL_INTERVAL = "poll_interval"
 CONF_GPS_POLL_INTERVAL = "gps_poll_interval"
+# Per-vehicle overrides ({vin: seconds}) written by the poll interval number
+# entities. The entry-level values above remain the fallback. See issue #189.
+CONF_POLL_INTERVAL_BY_VIN = "poll_interval_by_vin"
+CONF_GPS_POLL_INTERVAL_BY_VIN = "gps_poll_interval_by_vin"
 CONF_DEVICE_PROFILE = "device_profile"
 CONF_CONTROL_PIN = "control_pin"
 CONF_CLIMATE_DURATION = "climate_duration"
 CONF_DEBUG_DUMPS = "debug_dumps"
+CONF_MQTT_ENABLED = "mqtt_enabled"
 
 DEFAULT_POLL_INTERVAL = 300
 DEFAULT_GPS_POLL_INTERVAL = 300
 DEFAULT_CLIMATE_DURATION = 10
 DEFAULT_DEBUG_DUMPS = False
+DEFAULT_MQTT_ENABLED = True
 DEFAULT_COUNTRY = "United Kingdom"
 DEFAULT_LANGUAGE = "en"
 
 MIN_POLL_INTERVAL = 30
-MAX_POLL_INTERVAL = 900
+# 8 hours. Polling wakes the car, so frequent polling drains the traction
+# battery (~0.1 kWh/h at 300 s on a 60 kWh pack); a high ceiling lets users
+# poll sparsely (e.g. once an hour) without relying on external automations.
+# See issue #120.
+MAX_POLL_INTERVAL = 28800
 MIN_GPS_POLL_INTERVAL = 30
-MAX_GPS_POLL_INTERVAL = 900
+MAX_GPS_POLL_INTERVAL = 28800
 
 # Node-to-server mapping based on BYD app reverse engineering.
 # Push server URLs are stored as reference metadata for future usage.

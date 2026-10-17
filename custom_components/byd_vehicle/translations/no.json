@@ -15,6 +15,7 @@
           "gps_active_interval": "GPS aktivt intervall (sekunder)",
           "gps_inactive_interval": "GPS inaktivt intervall (sekunder)",
           "climate_duration": "Klimavarighet (time_span)",
+          "mqtt_enabled": "MQTT push-oppdateringer",
           "debug_dumps": "Feilsøkingsdump av API-svar"
         }
       }
@@ -42,6 +43,7 @@
           "gps_active_interval": "GPS aktivt intervall (sekunder)",
           "gps_inactive_interval": "GPS inaktivt intervall (sekunder)",
           "climate_duration": "Klimavarighet (time_span)",
+          "mqtt_enabled": "MQTT push-oppdateringer",
           "debug_dumps": "Feilsøkingsdump av API-svar"
         }
       }

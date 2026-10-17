@@ -15,6 +15,7 @@
           "gps_active_interval": "GPS ช่วงเวลาที่ใช้งาน (วินาที)",
           "gps_inactive_interval": "GPS ช่วงเวลาที่ไม่ใช้งาน (วินาที)",
           "climate_duration": "ระยะเวลาเครื่องปรับอากาศ (time_span)",
+          "mqtt_enabled": "การอัปเดตแบบพุชผ่าน MQTT",
           "debug_dumps": "ดัมพ์ดีบักการตอบสนอง API"
         }
       }
@@ -42,6 +43,7 @@
           "gps_active_interval": "GPS ช่วงเวลาที่ใช้งาน (วินาที)",
           "gps_inactive_interval": "GPS ช่วงเวลาที่ไม่ใช้งาน (วินาที)",
           "climate_duration": "ระยะเวลาเครื่องปรับอากาศ (time_span)",
+          "mqtt_enabled": "การอัปเดตแบบพุชผ่าน MQTT",
           "debug_dumps": "ดัมพ์ดีบักการตอบสนอง API"
         }
       }

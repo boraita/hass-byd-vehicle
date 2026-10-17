@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping
 from datetime import datetime, timedelta
 from typing import Any
 
@@ -12,7 +12,11 @@ import voluptuous as vol
 from homeassistant.components import persistent_notification
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, ServiceCall
-from homeassistant.exceptions import ConfigEntryNotReady, HomeAssistantError
+from homeassistant.exceptions import (
+    ConfigEntryAuthFailed,
+    ConfigEntryNotReady,
+    HomeAssistantError,
+)
 from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
@@ -25,8 +29,10 @@ from .const import (
     CONF_COUNTRY_CODE,
     CONF_DEVICE_PROFILE,
     CONF_GPS_POLL_INTERVAL,
+    CONF_GPS_POLL_INTERVAL_BY_VIN,
     CONF_LANGUAGE,
     CONF_POLL_INTERVAL,
+    CONF_POLL_INTERVAL_BY_VIN,
     DEFAULT_COUNTRY,
     DEFAULT_GPS_POLL_INTERVAL,
     DEFAULT_POLL_INTERVAL,
@@ -139,28 +145,49 @@ async def async_migrate_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     return True
 
 
-def _apply_poll_intervals_from_options(
-    entry: ConfigEntry,
-    entry_data: dict[str, Any],
-) -> None:
-    """Apply poll intervals from entry options to all coordinators."""
+def _resolve_poll_intervals(options: Mapping[str, Any], vin: str) -> tuple[int, int]:
+    """Return (telemetry, gps) poll intervals for one vehicle.
+
+    A per-VIN override wins over the entry-level value, which in turn falls
+    back to the defaults.
+    """
+
+    def _pick(by_vin_key: str, key: str, default: int) -> Any:
+        by_vin = options.get(by_vin_key)
+        if isinstance(by_vin, Mapping) and vin in by_vin:
+            return by_vin[vin]
+        return options.get(key, default)
+
     poll_interval = _sanitize_interval(
-        entry.options.get(CONF_POLL_INTERVAL, DEFAULT_POLL_INTERVAL),
+        _pick(CONF_POLL_INTERVAL_BY_VIN, CONF_POLL_INTERVAL, DEFAULT_POLL_INTERVAL),
         DEFAULT_POLL_INTERVAL,
         MIN_POLL_INTERVAL,
         MAX_POLL_INTERVAL,
     )
     gps_interval = _sanitize_interval(
-        entry.options.get(CONF_GPS_POLL_INTERVAL, DEFAULT_GPS_POLL_INTERVAL),
+        _pick(
+            CONF_GPS_POLL_INTERVAL_BY_VIN,
+            CONF_GPS_POLL_INTERVAL,
+            DEFAULT_GPS_POLL_INTERVAL,
+        ),
         DEFAULT_GPS_POLL_INTERVAL,
         MIN_GPS_POLL_INTERVAL,
         MAX_GPS_POLL_INTERVAL,
     )
+    return poll_interval, gps_interval
 
-    for coordinator in entry_data.get("coordinators", {}).values():
-        coordinator.set_poll_interval(poll_interval)
-    for gps_coordinator in entry_data.get("gps_coordinators", {}).values():
-        gps_coordinator.set_poll_interval(gps_interval)
+
+def _apply_poll_intervals_from_options(
+    entry: ConfigEntry,
+    entry_data: dict[str, Any],
+) -> None:
+    """Apply poll intervals from entry options to each vehicle's coordinators."""
+    for vin, coordinator in entry_data.get("coordinators", {}).items():
+        coordinator.set_poll_interval(_resolve_poll_intervals(entry.options, vin)[0])
+    for vin, gps_coordinator in entry_data.get("gps_coordinators", {}).items():
+        gps_coordinator.set_poll_interval(
+            _resolve_poll_intervals(entry.options, vin)[1]
+        )
 
 
 async def _async_handle_entry_update(hass: HomeAssistant, entry: ConfigEntry) -> None:
@@ -178,7 +205,12 @@ async def _async_handle_entry_update(hass: HomeAssistant, entry: ConfigEntry) ->
         for key in set(previous_options) | set(current_options)
         if previous_options.get(key) != current_options.get(key)
     }
-    poll_keys = {CONF_POLL_INTERVAL, CONF_GPS_POLL_INTERVAL}
+    poll_keys = {
+        CONF_POLL_INTERVAL,
+        CONF_GPS_POLL_INTERVAL,
+        CONF_POLL_INTERVAL_BY_VIN,
+        CONF_GPS_POLL_INTERVAL_BY_VIN,
+    }
 
     if changed_keys and changed_keys.issubset(poll_keys):
         _apply_poll_intervals_from_options(entry, entry_data)
@@ -209,23 +241,17 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     session = async_get_clientsession(hass)
     api = BydApi(hass, entry, session)
 
-    poll_interval = _sanitize_interval(
-        entry.options.get(CONF_POLL_INTERVAL, DEFAULT_POLL_INTERVAL),
-        DEFAULT_POLL_INTERVAL,
-        MIN_POLL_INTERVAL,
-        MAX_POLL_INTERVAL,
-    )
-    gps_interval = _sanitize_interval(
-        entry.options.get(CONF_GPS_POLL_INTERVAL, DEFAULT_GPS_POLL_INTERVAL),
-        DEFAULT_GPS_POLL_INTERVAL,
-        MIN_GPS_POLL_INTERVAL,
-        MAX_GPS_POLL_INTERVAL,
-    )
-
     async def _fetch_vehicles(client: BydClient) -> list:
         return await client.get_vehicles()
 
-    vehicles = await api.async_call(_fetch_vehicles)
+    # async_call raises UpdateFailed on network errors, which HA treats as a
+    # permanent setup error instead of retrying (#194)
+    try:
+        vehicles = await api.async_call(_fetch_vehicles)
+    except ConfigEntryAuthFailed:
+        raise
+    except HomeAssistantError as exc:
+        raise ConfigEntryNotReady(f"Unable to reach the BYD cloud: {exc}") from exc
     if not vehicles:
         raise ConfigEntryNotReady("No vehicles available for this account")
 
@@ -256,6 +282,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     for vehicle in vehicles:
         vin = vehicle.vin
+        poll_interval, gps_interval = _resolve_poll_intervals(entry.options, vin)
         telemetry_coordinator = BydDataUpdateCoordinator(
             hass,
             api,
@@ -294,6 +321,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             *(c.async_config_entry_first_refresh() for c in coordinators.values()),
             *(g.async_config_entry_first_refresh() for g in gps_coordinators.values()),
         )
+    except ConfigEntryAuthFailed:
+        raise
     except Exception as exc:  # noqa: BLE001
         raise ConfigEntryNotReady from exc
 

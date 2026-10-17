@@ -15,6 +15,7 @@
           "gps_active_interval": "GPS faol interval (sekundlar)",
           "gps_inactive_interval": "GPS nofaol interval (soniyalar)",
           "climate_duration": "Iqlim davomiyligi (time_span)",
+          "mqtt_enabled": "MQTT push yangilanishlari",
           "debug_dumps": "API javoblarni xato tuzatish uchun saqlash"
         }
       }
@@ -42,6 +43,7 @@
           "gps_active_interval": "GPS faol interval (sekundlar)",
           "gps_inactive_interval": "GPS nofaol interval (soniyalar)",
           "climate_duration": "Iqlim davomiyligi (time_span)",
+          "mqtt_enabled": "MQTT push yangilanishlari",
           "debug_dumps": "API javoblarni xato tuzatish uchun saqlash"
         }
       }

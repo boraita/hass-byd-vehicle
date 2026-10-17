@@ -50,8 +50,10 @@ from .const import (
     CONF_DEBUG_DUMPS,
     CONF_DEVICE_PROFILE,
     CONF_LANGUAGE,
+    CONF_MQTT_ENABLED,
     DEFAULT_DEBUG_DUMPS,
     DEFAULT_LANGUAGE,
+    DEFAULT_MQTT_ENABLED,
     DOMAIN,
 )
 
@@ -166,6 +168,7 @@ class BydApi:
             # it twice (realtime + GPS).  5s keeps the fast path for awake
             # cars and fails over sooner otherwise.
             mqtt_timeout=5.0,
+            mqtt_enabled=entry.options.get(CONF_MQTT_ENABLED, DEFAULT_MQTT_ENABLED),
         )
         self._client: BydClient | None = None
         self._commands_enabled: bool = False
@@ -181,10 +184,11 @@ class BydApi:
         self._mqtt_event_counters: dict[str, int] = {}
         self._mqtt_event_samples: list[dict[str, Any]] = []
         _LOGGER.debug(
-            "BYD API initialized: entry_id=%s, region=%s, language=%s",
+            "BYD API initialized: entry_id=%s, region=%s, language=%s, mqtt=%s",
             entry.entry_id,
             entry.data[CONF_BASE_URL],
             entry.data.get(CONF_LANGUAGE, DEFAULT_LANGUAGE),
+            self._config.mqtt_enabled,
         )
 
     # ------------------------------------------------------------------
