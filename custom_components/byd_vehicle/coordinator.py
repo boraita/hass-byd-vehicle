@@ -2553,30 +2553,64 @@ class BydDataUpdateCoordinator(DataUpdateCoordinator[VehicleSnapshot]):
         else:
             self._service_busy_streak = 0
 
+    def _mqtt_push_fresh(self) -> bool:
+        """Whether a push arrived within the MQTT-aware window."""
+        return (
+            self._last_mqtt_push_at is not None
+            and datetime.now(tz=UTC) - self._last_mqtt_push_at
+            < self._MQTT_AWARE_WINDOW
+        )
+
     @property
     def is_cloud_responsive(self) -> bool:
-        """Whether the cloud has been responding recently.
+        """Whether the cloud has been responding recently, via HTTP or MQTT.
 
-        Flips to ``False`` after 3 consecutive failed fetches and resets
-        to ``True`` on the next success.
+        Flips to ``False`` after 3 consecutive failed fetches and resets to
+        ``True`` on the next success. A live MQTT push counts on its own —
+        it's the cloud talking to us even if our HTTP polling is failing.
         """
-        return self._consecutive_fetch_failures < 3
+        if self._consecutive_fetch_failures < 3:
+            return True
+        return self._mqtt_push_fresh()
+
+    @property
+    def last_update_source(self) -> str:
+        """Which channel delivered the most recent fresh data.
+
+        One of ``both``, ``mqtt``, ``api``, or ``none`` — compares
+        ``_last_mqtt_push_at`` and ``_last_successful_fetch_at`` against the
+        same ``_MQTT_AWARE_WINDOW`` used elsewhere to mean "still flowing".
+        """
+        now = datetime.now(tz=UTC)
+        api_fresh = (
+            self._last_successful_fetch_at is not None
+            and now - self._last_successful_fetch_at < self._MQTT_AWARE_WINDOW
+        )
+        mqtt_fresh = self._mqtt_push_fresh()
+        if api_fresh and mqtt_fresh:
+            return "both"
+        if mqtt_fresh:
+            return "mqtt"
+        if api_fresh:
+            return "api"
+        return "none"
 
     @property
     def connection_status(self) -> str:
         """Synthesised data-link state for the user.
 
-        - ``paused``: polling disabled (by the user / an automation) — we
-          are not even trying to fetch.
+        - ``paused``: polling disabled (by the user / an automation) and no
+          MQTT push has arrived recently either — genuinely nothing coming in.
+        - ``mqtt_only``: polling disabled, but MQTT push is still flowing —
+          data is current, we're just not making our own HTTP requests.
         - ``rate_limited``: the cloud is throttling us (repeated 1008
           service-busy) — usually transient, the adaptive interval backs off.
-        - ``unreachable``: 3+ consecutive failed fetches — **no data is
-          coming in**; the cloud is down, the network is broken, or the car
-          is out of coverage / deep asleep and the cloud can't reach it.
+        - ``unreachable``: 3+ consecutive failed fetches and no MQTT push
+          either — **no data is coming in** from any channel.
         - ``ok``: data is flowing.
         """
         if not self._polling_enabled:
-            return "paused"
+            return "mqtt_only" if self._mqtt_push_fresh() else "paused"
         if self._service_busy_streak >= self._SERVICE_BUSY_BACKOFF_THRESHOLD:
             return "rate_limited"
         if not self.is_cloud_responsive:

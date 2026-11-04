@@ -65,6 +65,7 @@ def keep_previous_when_zero(previous: Any, current: Any) -> Any:
 
 _CONNECTION_REASON: dict[str, str] = {
     "ok": "Receiving data normally",
+    "mqtt_only": "Polling is paused, but MQTT push is current",
     "paused": "Polling is paused — not fetching",
     "rate_limited": "Cloud is throttling requests (service busy) — backing off",
     "unreachable": "No data from the car — cloud down or out of coverage",
@@ -1024,14 +1025,20 @@ SENSOR_DESCRIPTIONS: tuple[BydSensorDescription, ...] = (
         name="Connection status",
         source="coordinator",
         device_class=SensorDeviceClass.ENUM,
-        options=["ok", "paused", "rate_limited", "unreachable"],
+        options=["ok", "mqtt_only", "paused", "rate_limited", "unreachable"],
         value_fn=lambda c: c.connection_status,
         state_attrs_fn=lambda c: {
             "reason": _CONNECTION_REASON.get(c.connection_status, ""),
+            "source": c.last_update_source,
             "minutes_since_data": c.minutes_since_last_data,
             "last_successful_fetch": (
                 c.last_successful_fetch_at.isoformat()
                 if c.last_successful_fetch_at is not None
+                else None
+            ),
+            "last_mqtt_push": (
+                c.last_mqtt_push_at.isoformat()
+                if c.last_mqtt_push_at is not None
                 else None
             ),
         },
