@@ -21,6 +21,7 @@ from homeassistant.helpers.restore_state import RestoreEntity
 from pybyd.models.realtime import (
     DoorOpenState,
     LockState,
+    SentryStatus,
     WindowState,
 )
 from pybyd.models.vehicle import Vehicle
@@ -65,6 +66,9 @@ class BydBinarySensorDescription(BinarySensorEntityDescription):
     Fails open: when the car reports no ``function_nos`` at all (latest-config
     fetch failed, or the endpoint is unsupported for the VIN) the entity is
     created, since absence of the list is not evidence the part is missing."""
+    # value_fn returns None on a sentinel reading; a raw 0 then clears a
+    # fault already seen, since the car has shown it reports real statuses.
+    zero_clears_fault: bool = False
 
 
 def _is_charging_from_realtime(obj: Any) -> bool | None:
@@ -103,6 +107,27 @@ def _attr_truthy_online_only(attr_name: str) -> Callable[[Any], bool | None]:
         if val is None:
             return None
         return bool(val)
+
+    return _fn
+
+
+def _attr_equals_online_only(
+    attr_name: str, target: Any
+) -> Callable[[Any], bool | None]:
+    """Like :func:`_attr_equals`, but ``None`` while the car is offline.
+
+    Combines the latched-flag guard of :func:`_attr_truthy_online_only` with
+    an exact enum match: sentry reports ``ON=2`` / ``OFF=4``, so plain
+    truthiness would read OFF as on.
+    """
+
+    def _fn(obj: Any) -> bool | None:
+        if obj is None or getattr(obj, "is_online", True) is False:
+            return None
+        val = getattr(obj, attr_name, None)
+        if val is None:
+            return None
+        return val == target
 
     return _fn
 
@@ -152,10 +177,13 @@ def _tire_status_with_sentinel_guard(attr_name: str) -> Callable[[Any], bool | N
     sit at ``off`` ("no problem") indistinguishably from a working TPMS
     array, so a future real fault would be masked.
 
-    Cross-field signature of the sentinel payload: all four corners ``0``
-    AND ``tirepressure_system`` also ``0``.  When that matches, return
-    ``None`` so the sensor reads ``unavailable``.  Any single non-zero
-    corner is treated as a real fault and passes through immediately.
+    The cross-field signature of the sentinel-mode payload is *all four
+    corners reading 0 simultaneously and the ``tirepressure_system``
+    flag also reading 0*.  When that matches, return ``None`` so the
+    sensor reads ``unavailable``.  Any single non-zero corner is treated
+    as a real fault and passes through normally.  A healthy car reads the
+    same once a fault clears, so the entity turns a sensor that was on back
+    off (``zero_clears_fault``).
     """
 
     def _fn(obj: Any) -> bool | None:
@@ -237,7 +265,7 @@ BINARY_SENSOR_DESCRIPTIONS: tuple[BydBinarySensorDescription, ...] = (
         key="sentry_status",
         source="realtime",
         icon="mdi:shield-car",
-        value_fn=_attr_truthy_online_only("sentry_status"),
+        value_fn=_attr_equals_online_only("sentry_status", SentryStatus.ON),
     ),
     # ====================================
     # Individual doors (disabled)
@@ -513,6 +541,7 @@ BINARY_SENSOR_DESCRIPTIONS: tuple[BydBinarySensorDescription, ...] = (
         entity_registry_enabled_default=False,
         entity_category=EntityCategory.DIAGNOSTIC,
         value_fn=_tire_status_with_sentinel_guard("left_front_tire_status"),
+        zero_clears_fault=True,
     ),
     BydBinarySensorDescription(
         key="right_front_tire_status",
@@ -522,6 +551,7 @@ BINARY_SENSOR_DESCRIPTIONS: tuple[BydBinarySensorDescription, ...] = (
         entity_registry_enabled_default=False,
         entity_category=EntityCategory.DIAGNOSTIC,
         value_fn=_tire_status_with_sentinel_guard("right_front_tire_status"),
+        zero_clears_fault=True,
     ),
     BydBinarySensorDescription(
         key="left_rear_tire_status",
@@ -531,6 +561,7 @@ BINARY_SENSOR_DESCRIPTIONS: tuple[BydBinarySensorDescription, ...] = (
         entity_registry_enabled_default=False,
         entity_category=EntityCategory.DIAGNOSTIC,
         value_fn=_tire_status_with_sentinel_guard("left_rear_tire_status"),
+        zero_clears_fault=True,
     ),
     BydBinarySensorDescription(
         key="right_rear_tire_status",
@@ -540,6 +571,7 @@ BINARY_SENSOR_DESCRIPTIONS: tuple[BydBinarySensorDescription, ...] = (
         entity_registry_enabled_default=False,
         entity_category=EntityCategory.DIAGNOSTIC,
         value_fn=_tire_status_with_sentinel_guard("right_rear_tire_status"),
+        zero_clears_fault=True,
     ),
     BydBinarySensorDescription(
         key="upgrade_status",
@@ -561,6 +593,14 @@ BINARY_SENSOR_DESCRIPTIONS: tuple[BydBinarySensorDescription, ...] = (
         entity_registry_enabled_default=False,
         entity_category=EntityCategory.DIAGNOSTIC,
         value_fn=lambda r: r.is_vehicle_on,
+    ),
+    # A/C compressor, separate from the overall climate state (pyBYD#64)
+    BydBinarySensorDescription(
+        key="ac_compressor",
+        source="hvac",
+        device_class=BinarySensorDeviceClass.RUNNING,
+        icon="mdi:snowflake",
+        value_fn=lambda h: h.is_compressor_on if h is not None else None,
     ),
     # ====================================
     # Additional warnings (disabled)
@@ -773,7 +813,15 @@ class BydBinarySensor(BydVehicleEntity, BinarySensorEntity, RestoreEntity):
         if obj is None:
             return None
         if self.entity_description.value_fn is not None:
-            return self.entity_description.value_fn(obj)
+            value = self.entity_description.value_fn(obj)
+            if (
+                value is None
+                and self.entity_description.zero_clears_fault
+                and self._last_is_on is True
+                and getattr(obj, self.entity_description.key, None) == 0
+            ):
+                return False
+            return value
         attr = self.entity_description.attr_key or self.entity_description.key
         value = getattr(obj, attr, None)
         if value is None:

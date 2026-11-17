@@ -107,6 +107,7 @@
           "country_code": "Country",
           "climate_duration": "Climate duration",
           "mqtt_enabled": "MQTT push updates",
+          "inbox_notifications": "Show BYD inbox messages as notifications",
           "debug_dumps": "Debug dump API responses"
         }
       },
@@ -120,6 +121,7 @@
           "country_code": "Country",
           "climate_duration": "Climate duration",
           "mqtt_enabled": "MQTT push updates",
+          "inbox_notifications": "Show BYD inbox messages as notifications",
           "debug_dumps": "Debug dump API responses"
         }
       }
@@ -383,6 +385,9 @@
       },
       "right_rear_window_pct": {
         "name": "Rear right window opening"
+      },
+      "latest_notification": {
+        "name": "Latest notification"
       }
     },
     "binary_sensor": {
@@ -514,6 +519,9 @@
       },
       "scheduled_charge_until_full": {
         "name": "Scheduled charge until full"
+      },
+      "ac_compressor": {
+        "name": "A/C compressor"
       }
     },
     "button": {
@@ -620,6 +628,9 @@
       },
       "car_on": {
         "name": "A/C on"
+      },
+      "climate_fresh_air": {
+        "name": "Climate fresh air"
       },
       "steering_wheel_heat": {
         "name": "Steering wheel heating"

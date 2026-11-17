@@ -11,6 +11,7 @@ from pathlib import Path
 from time import perf_counter
 from typing import Any
 
+from homeassistant.components import persistent_notification
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import CALLBACK_TYPE, HomeAssistant, callback
 from homeassistant.exceptions import ConfigEntryAuthFailed, HomeAssistantError
@@ -36,9 +37,11 @@ from pybyd import (
     BydTransportError,
     CommandAckEvent,
     CommandLifecycleEvent,
+    NotificationCategory,
     VehicleSnapshot,
 )
 from pybyd.config import BydConfig, DeviceProfile
+from pybyd.models.message_center import VehicleMsgItemInfo
 from pybyd.models.realtime import PowerGear
 from pybyd.models.vehicle import Vehicle
 
@@ -49,9 +52,11 @@ from .const import (
     CONF_COUNTRY_CODE,
     CONF_DEBUG_DUMPS,
     CONF_DEVICE_PROFILE,
+    CONF_INBOX_NOTIFICATIONS,
     CONF_LANGUAGE,
     CONF_MQTT_ENABLED,
     DEFAULT_DEBUG_DUMPS,
+    DEFAULT_INBOX_NOTIFICATIONS,
     DEFAULT_LANGUAGE,
     DEFAULT_MQTT_ENABLED,
     DOMAIN,
@@ -108,6 +113,9 @@ _TRIP_HISTORY_MAX = 300
 _DEFAULT_BATTERY_KWH: float = 82.5
 
 _AUTH_ERRORS = (BydAuthenticationError, BydSessionExpiredError)
+# The inbox is account-wide, so one fetch serves every vehicle on the entry.
+_INBOX_FETCH_INTERVAL = timedelta(minutes=15)
+_INBOX_STORE_VERSION = 1
 _RECOVERABLE_ERRORS = (
     BydApiError,
     BydTransportError,
@@ -180,6 +188,15 @@ class BydApi:
         )
         self._debug_dump_dir = Path(hass.config.path(".storage/byd_vehicle_debug"))
         self._coordinators: dict[str, BydDataUpdateCoordinator] = {}
+        self._inbox_enabled: bool = entry.options.get(
+            CONF_INBOX_NOTIFICATIONS,
+            DEFAULT_INBOX_NOTIFICATIONS,
+        )
+        self._inbox_store: Store[list[str]] | None = None
+        self._inbox_lock = asyncio.Lock()
+        self._inbox_messages: list[VehicleMsgItemInfo] = []
+        self._inbox_fetched_at: datetime | None = None
+        self._inbox_seen_ids: set[str] | None = None
         self._gps_coordinators: dict[str, BydGpsUpdateCoordinator] = {}
         self._mqtt_event_counters: dict[str, int] = {}
         self._mqtt_event_samples: list[dict[str, Any]] = []
@@ -460,6 +477,82 @@ class BydApi:
             return None
         return next((v for v in vehicles if v.vin == vin), None)
 
+    @property
+    def inbox_enabled(self) -> bool:
+        """Return whether BYD inbox messages are surfaced in Home Assistant."""
+        return self._inbox_enabled
+
+    @property
+    def inbox_messages(self) -> list[VehicleMsgItemInfo]:
+        """Return the last fetched unread inbox messages, newest first."""
+        return self._inbox_messages
+
+    async def async_refresh_inbox(self) -> None:
+        """Fetch the account inbox and notify about messages not seen before.
+
+        Runs at most once per ``_INBOX_FETCH_INTERVAL``. Seen message ids are
+        persisted so a restart doesn't re-notify messages still unread in
+        the app.
+        """
+        if not self._inbox_enabled:
+            return
+        async with self._inbox_lock:
+            now = datetime.now(tz=UTC)
+            if (
+                self._inbox_fetched_at is not None
+                and now - self._inbox_fetched_at < _INBOX_FETCH_INTERVAL
+            ):
+                return
+            if self._inbox_store is None:
+                self._inbox_store = Store(
+                    self._hass,
+                    _INBOX_STORE_VERSION,
+                    f"{DOMAIN}_inbox_{self._entry.entry_id}",
+                )
+                stored = await self._inbox_store.async_load()
+                self._inbox_seen_ids = set(stored or [])
+            seen_ids = self._inbox_seen_ids or set()
+
+            async def _fetch(client: BydClient) -> list[VehicleMsgItemInfo]:
+                return await client.get_notifications(NotificationCategory.VEHICLE)
+
+            # Set before the call so a failing endpoint backs off too.
+            self._inbox_fetched_at = now
+            messages: list[VehicleMsgItemInfo] = await self.async_call(
+                _fetch, command="inbox"
+            )
+
+            current_ids = {str(message.message_id) for message in messages}
+            new_messages = [
+                message
+                for message in messages
+                if str(message.message_id) not in seen_ids
+            ]
+            for message in new_messages:
+                persistent_notification.async_create(
+                    self._hass,
+                    message.content or message.title or "New BYD vehicle message",
+                    title=f"BYD: {message.title or 'Vehicle message'}",
+                    notification_id=(
+                        f"{DOMAIN}_{self._entry.entry_id}_message_{message.message_id}"
+                    ),
+                )
+            if new_messages:
+                _LOGGER.debug(
+                    "Published %d new BYD inbox notification(s)", len(new_messages)
+                )
+            # Only unread ids can come back, so older ones are dropped.
+            if current_ids != seen_ids:
+                self._inbox_seen_ids = current_ids
+                await self._inbox_store.async_save(sorted(current_ids))
+
+            epoch = datetime.min.replace(tzinfo=UTC)
+            self._inbox_messages = sorted(
+                messages,
+                key=lambda message: message.push_time or epoch,
+                reverse=True,
+            )
+
     async def async_get_car(self, vin: str, vehicle: Vehicle) -> BydCar:
         """Obtain a ``BydCar`` aggregate for *vin*.
 
@@ -572,7 +665,54 @@ class BydApi:
             raise
 
 
-class BydDataUpdateCoordinator(DataUpdateCoordinator[VehicleSnapshot]):
+class _ReschedulingCoordinator(DataUpdateCoordinator[VehicleSnapshot]):
+    """DataUpdateCoordinator that can bring its pending refresh forward.
+
+    DataUpdateCoordinator only reads ``update_interval`` when it schedules the
+    next refresh, so a shorter interval otherwise waits out the old one (eg
+    3600 s cut to 120 s still polls up to an hour later).
+    """
+
+    _refresh_due: float | None = None
+
+    @callback
+    def _schedule_refresh(self) -> None:
+        """Schedule a refresh and remember when it is due."""
+        delay = (
+            self._retry_after
+            if self._retry_after is not None
+            else self._update_interval_seconds
+        )
+        super()._schedule_refresh()
+        if self._unsub_refresh is None or delay is None:
+            self._refresh_due = None
+        else:
+            # Same sum as DataUpdateCoordinator._schedule_refresh.
+            self._refresh_due = int(self.hass.loop.time()) + self._microsecond + delay
+
+    def _bring_pending_refresh_forward(self, kind: str, vin: str) -> None:
+        """Reschedule the pending refresh if the current interval makes it sooner.
+
+        It is never pushed back: a longer or unchanged interval applies from
+        the next refresh, as before.  A running refresh schedules the next one
+        itself.
+        """
+        interval = self._update_interval_seconds
+        due = self._refresh_due
+        if interval is None or due is None or self._unsub_refresh is None:
+            return
+        if int(self.hass.loop.time()) + self._microsecond + interval >= due:
+            return
+        _LOGGER.debug(
+            "Pending %s refresh brought forward: vin=%s, interval=%ss",
+            kind,
+            vin[-6:],
+            int(interval),
+        )
+        self._schedule_refresh()
+
+
+class BydDataUpdateCoordinator(_ReschedulingCoordinator):
     """Coordinator for telemetry + HVAC updates for a single VIN.
 
     Holds a ``BydCar`` reference (set after first refresh).
@@ -588,6 +728,15 @@ class BydDataUpdateCoordinator(DataUpdateCoordinator[VehicleSnapshot]):
     """
 
     _HVAC_FINAL_RECONCILE_RETRY_DELAY_SECONDS = 60
+
+    # While the car is parked and charging below this battery power (W),
+    # the session is treated as AC slow charging: SoC rises ~1% every
+    # 5-30 min, so polling at the configured interval mostly returns
+    # unchanged data.  The threshold sits above 11 kW three-phase AC
+    # wallboxes (the on-board charger limit on most BYD models) and
+    # below DC fast charging.  A DC session tapering below it is slowed
+    # too, which is fine: SoC rises just as slowly there.
+    _AC_SLOW_CHARGE_THRESHOLD_W = 12000.0
 
     # Override parent annotations: ``data`` is None until first refresh,
     # and we assign ``update_interval = None`` to pause polling (HA
@@ -683,6 +832,9 @@ class BydDataUpdateCoordinator(DataUpdateCoordinator[VehicleSnapshot]):
         )
         self._trip_store_loaded = False
         self._trip_data: dict[str, Any] = {}
+        # Air source for remote climate starts: True = fresh (outside) air,
+        # False = recirculate (BYD's default).  Set by the fresh-air switch.
+        self.climate_fresh_air: bool = False
 
     # ------------------------------------------------------------------
     # State-engine push
@@ -1012,6 +1164,16 @@ class BydDataUpdateCoordinator(DataUpdateCoordinator[VehicleSnapshot]):
         return self.has_pin_configured and self._api.commands_enabled
 
     @property
+    def inbox_enabled(self) -> bool:
+        """Return whether BYD inbox messages are surfaced."""
+        return self._api.inbox_enabled
+
+    @property
+    def inbox_messages(self) -> list[VehicleMsgItemInfo]:
+        """Return the account's unread inbox messages, newest first."""
+        return self._api.inbox_messages
+
+    @property
     def vin(self) -> str:
         return self._vin
 
@@ -1149,6 +1311,13 @@ class BydDataUpdateCoordinator(DataUpdateCoordinator[VehicleSnapshot]):
                 exc,
             )
 
+        try:
+            await self._api.async_refresh_inbox()
+        except ConfigEntryAuthFailed:
+            raise
+        except HomeAssistantError as exc:
+            _LOGGER.debug("Inbox fetch failed: vin=%s error=%s", self._vin[-6:], exc)
+
         snapshot = car.state
         self._schedule_hvac_final_reconcile_if_needed(previous_snapshot, snapshot)
 
@@ -1241,12 +1410,6 @@ class BydDataUpdateCoordinator(DataUpdateCoordinator[VehicleSnapshot]):
     # Aggressive-poll window after startup: skip adaptive backoff for the
     # first 5 minutes so a deep-sleep car doesn't strand us on stale data.
     _STARTUP_AGGRESSIVE_WINDOW = timedelta(minutes=5)
-
-    # Below this instantaneous battery power (W), an active charge is
-    # considered "AC slow" — SOC rises ~1% every ~12 min, so a 1×
-    # cadence wastes calls.  Threshold sits between Schuko (~2.3 kW)
-    # and the smallest DC fast chargers (~25 kW).
-    _AC_SLOW_CHARGE_THRESHOLD_W = 5000.0
 
     # Service-busy (1008) backoff: when the backend returns bursts of
     # BydServiceBusyError, widen the poll interval instead of hammering.
@@ -2557,8 +2720,7 @@ class BydDataUpdateCoordinator(DataUpdateCoordinator[VehicleSnapshot]):
         """Whether a push arrived within the MQTT-aware window."""
         return (
             self._last_mqtt_push_at is not None
-            and datetime.now(tz=UTC) - self._last_mqtt_push_at
-            < self._MQTT_AWARE_WINDOW
+            and datetime.now(tz=UTC) - self._last_mqtt_push_at < self._MQTT_AWARE_WINDOW
         )
 
     @property
@@ -2665,6 +2827,7 @@ class BydDataUpdateCoordinator(DataUpdateCoordinator[VehicleSnapshot]):
                 self._apply_adaptive_interval(self.data)
             else:
                 self.update_interval = self._fixed_interval
+            self._bring_pending_refresh_forward("telemetry", self._vin)
         self.async_update_listeners()
 
     def set_polling_enabled(self, enabled: bool) -> bool:
@@ -3067,7 +3230,7 @@ class BydDataUpdateCoordinator(DataUpdateCoordinator[VehicleSnapshot]):
             )
 
 
-class BydGpsUpdateCoordinator(DataUpdateCoordinator[VehicleSnapshot]):
+class BydGpsUpdateCoordinator(_ReschedulingCoordinator):
     """Coordinator for GPS updates for a single VIN.
 
     Uses the ``BydCar`` from the telemetry coordinator so GPS data flows
@@ -3117,6 +3280,7 @@ class BydGpsUpdateCoordinator(DataUpdateCoordinator[VehicleSnapshot]):
         self._fixed_interval = timedelta(seconds=seconds)
         if self._polling_enabled:
             self.update_interval = self._fixed_interval
+            self._bring_pending_refresh_forward("GPS", self._vin)
         self.async_update_listeners()
 
     def set_polling_enabled(self, enabled: bool) -> bool:

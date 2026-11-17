@@ -12,7 +12,7 @@
     "pybyd"
   ],
   "requirements": [
-    "pybyd@git+https://github.com/boraita/pyBYD@7be2983336d7c654cfe80a9600be8ad8be9ddfbf"
+    "pybyd@git+https://github.com/boraita/pyBYD@ba0096e3dcbe7e4c35bf190a7cf622411b1c61a6"
   ],
-  "version": "0.0.91-sealion.106"
+  "version": "0.0.96-sealion.107"
 }
