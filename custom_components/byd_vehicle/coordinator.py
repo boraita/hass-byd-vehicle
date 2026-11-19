@@ -461,6 +461,10 @@ class BydApi:
                 pass
             self._client = None
             self._commands_enabled = False
+            # BydCar instances are bound to the closed client; drop them so
+            # the next refresh fetches cars from the fresh client.
+            for coordinator in self._coordinators.values():
+                coordinator._car = None
 
     async def async_refresh_vehicle_metadata(self, vin: str) -> Vehicle | None:
         """Re-fetch ``/app/account/getAllListByUserId`` and return the entry.
